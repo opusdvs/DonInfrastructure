@@ -7,6 +7,6 @@ on:
 jobs:
   hello:
     runs-on: ubuntu-latest
-    stemp:
+    steps:
       - name: Print Hello World
         run: echo "Hello, World!"
