@@ -1,20 +1,17 @@
-name: Terraform Plan Workflow for dev-cluster
+name: Terraform Destroy
 
 on:
-  push:
-    branches:
-      - dev
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment to deploy"
+        description: "Environment to destroy"
         required: true
         default: "dev"
         type: choice
         options:
           - dev
 jobs:
-  terraform:
+  terraform-destroy:
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
     defaults:
@@ -33,7 +30,5 @@ jobs:
         run: terraform init
       - name: Validate Terraform
         run: terraform validate
-      - name: Plan Terraform
-        run: terraform plan
-      - name: Apply Terraform
-        run: terraform apply --auto-approve
+      - name: Destroy Terraform
+        run: terraform destroy --auto-approve
