@@ -6,10 +6,11 @@ on:
       environment:
         description: "Environment to destroy"
         required: true
-        default: "dev"
+        default: dev
         type: choice
         options:
           - dev
+
 jobs:
   terraform-destroy:
     runs-on: ubuntu-latest
@@ -22,13 +23,8 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       TWC_TOKEN: ${{ secrets.TWC_TOKEN }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-      - name: Initialize Terraform
-        run: terraform init
-      - name: Validate Terraform
-        run: terraform validate
-      - name: Destroy Terraform
-        run: terraform destroy --auto-approve
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2
+      - run: terraform init
+      - run: terraform validate
+      - run: terraform destroy --auto-approve
