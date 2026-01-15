@@ -1,8 +1,3 @@
-variable "twc_token" {
-  type        = string
-  description = "Timeweb Cloud API token"
-}
-
 variable "cluster_name" {
   type        = string
   description = "Cluster name"
