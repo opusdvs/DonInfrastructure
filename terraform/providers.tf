@@ -7,6 +7,4 @@ terraform {
   required_version = ">= 0.13"
 }
 
-provider "twc" {
-  token = var.twc_token
-}
+provider "twc" {}
