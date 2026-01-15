@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - dev
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        required: true
+        default: "dev"
 jobs:
   terraform:
     runs-on: ubuntu-latest
@@ -26,5 +32,4 @@ jobs:
       - name: Plan Terraform
         run: terraform plan
       - name: Apply Terraform
-        if: github.event_name == 'workflow_dispatch'
         run: terraform apply -auto-approve
