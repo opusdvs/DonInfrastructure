@@ -1,6 +1,9 @@
 name: Terraform Plan Workflow for dev-cluster
 
 on:
+  push:
+    branches:
+      - dev
   workflow_dispatch:
     inputs:
       environment:
