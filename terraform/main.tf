@@ -5,6 +5,7 @@ resource "twc_k8s_cluster" "k8s-cluster" {
    version = var.cluster_version
 
    preset_id = data.twc_k8s_preset.k8s-preset-master.id
+   project_id = data.twc_projects.dev.id
 }
 
 resource "twc_k8s_node_group" "k8s-cluster-node-group" {
@@ -12,4 +13,9 @@ resource "twc_k8s_node_group" "k8s-cluster-node-group" {
    name = var.node_group_name
    preset_id = data.twc_k8s_preset.k8s-preset-node.id
    node_count = var.node_group_node_count
+}
+
+resource "local_file" "kubeconfig" {
+   content = twc_k8s_cluster.k8s-cluster.kubeconfig
+   filename = "kubeconfig-${twc_k8s_cluster.k8s-cluster.name}.yaml"
 }

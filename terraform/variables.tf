@@ -19,7 +19,7 @@ variable "cluster_network_driver" {
 variable "cluster_version" {
   type        = string
   description = "Cluster version"
-  default     = "v1.34.2+k0s.0"
+  default     = "v1.34.3+k0s.0"
 }
 
 variable "node_group_name" {
@@ -37,5 +37,22 @@ variable "node_group_description" {
 variable "node_group_node_count" {
   type        = number
   description = "Node group node count"
-  default     = 3
+  default     = 1
+}
+
+variable twc_token {
+  type        = string
+  description = "TWC token"
+}
+
+variable "region" {
+  type        = string
+  description = "Region"
+  default     = "nl-1"
+}
+
+variable "project_name" {
+  type        = string
+  description = "Project name"
+  default     = "dev"
 }
