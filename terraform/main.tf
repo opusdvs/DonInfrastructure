@@ -17,5 +17,5 @@ resource "twc_k8s_node_group" "k8s-cluster-node-group" {
 
 resource "local_file" "kubeconfig" {
    content = twc_k8s_cluster.k8s-cluster.kubeconfig
-   filename = "kubeconfig-${twc_k8s_cluster.k8s-cluster.name}.yaml"
+   filename = "${var.home_dir}/kubeconfig-${twc_k8s_cluster.k8s-cluster.name}.yaml"
 }

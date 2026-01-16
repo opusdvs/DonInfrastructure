@@ -51,3 +51,9 @@ variable "project_name" {
   description = "Project name"
   default     = "dev"
 }
+
+variable "home_dir" {
+  type        = string
+  description = "Home directory"
+  default     = "/home/opusdv"
+}
