@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket                      = "2d25c8ae-dev-terraform-state"
+    bucket                      = "2d25c8ae-service-terraform-state"
     key                         = "terraform.tfstate"
     endpoint                    = "https://s3.twcstorage.ru"
     region                      = "ru-1"
