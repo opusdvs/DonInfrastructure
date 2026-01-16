@@ -25,24 +25,19 @@ variable "cluster_version" {
 variable "node_group_name" {
   type        = string
   description = "Node group name"
-  default     = "node-group"
+  default     = "dev-node-group"
 }
 
 variable "node_group_description" {
   type        = string
   description = "Node group description"
-  default     = "Node group"
+  default     = "Dev node group"
 }
 
 variable "node_group_node_count" {
   type        = number
   description = "Node group node count"
   default     = 1
-}
-
-variable twc_token {
-  type        = string
-  description = "TWC token"
 }
 
 variable "region" {
