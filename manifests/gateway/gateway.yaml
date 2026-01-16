@@ -1,0 +1,36 @@
+---
+# Gateway ресурс для развертывания Gateway API с поддержкой HTTPS
+# Использует существующий Secret с TLS сертификатом (без cert-manager)
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: argocd-gateway
+  namespace: argocd
+  annotations:
+    # Аннотации для External DNS
+    external-dns.alpha.kubernetes.io/hostname: "argo.buildbyte.ru"
+    external-dns.alpha.kubernetes.io/ttl: "1200"
+  labels:
+    external-dns: enabled
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "argo.buildbyte.ru"  # Добавлен hostname для HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "argo.buildbyte.ru"  # Добавлен hostname для HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: gateway-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All

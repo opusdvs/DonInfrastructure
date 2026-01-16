@@ -59,3 +59,11 @@ terraform.rc
 
 # OS files
 Thumbs.db
+
+# SSL/TLS certificates and keys
+*.crt
+*.key
+*.pem
+*.cert
+*.base64
+argo.buildbyte.ru.*
