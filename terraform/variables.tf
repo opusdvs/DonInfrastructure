@@ -38,3 +38,9 @@ variable "node_group_node_count" {
   description = "Node group node count"
   default     = 3
 }
+
+variable "home_dir" {
+  type        = string
+  description = "Home directory"
+  default     = "/home/opusdv"
+}
