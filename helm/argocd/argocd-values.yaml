@@ -2616,7 +2616,7 @@ server:
   # Refer to https://gateway-api.sigs.k8s.io/implementations/ for controller-specific details
   httproute:
     # -- Enable HTTPRoute resource for Argo CD server (Gateway API)
-    enabled: true
+    enabled: false
     # -- Additional HTTPRoute labels
     labels: {}
     # -- Additional HTTPRoute annotations
@@ -2625,9 +2625,9 @@ server:
     ## Must reference an existing Gateway
     # @default -- `[]` (See [values.yaml])
     parentRefs:
-      - name: argocd-gateway
+      - name: service-gateway
         namespace: default
-        sectionName: https
+        sectionName: https  # HTTPS listener (порт 443) - для основного трафика Argo CD
       # - name: example-gateway
       #   namespace: example-gateway-namespace
       #   sectionName: https
@@ -2644,6 +2644,11 @@ server:
               type: PathPrefix
               value: /
         # filters: []
+        #   - type: RequestHeaderModifier
+        #     requestHeaderModifier:
+        #       add:
+        #         - name: X-Custom-Header
+        #           value: custom-value
         #   - type: RequestHeaderModifier
         #     requestHeaderModifier:
         #       add:

@@ -1,0 +1,12 @@
+---
+# Keycloak Custom Resource Definition
+# Установите CRDs перед установкой оператора
+# Можно установить через: kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+
+# Для локальной установки используйте команду:
+# kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+# kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+# kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakclients.k8s.keycloak.org-v1.yml
+
+# Или используйте kustomize:
+# kubectl kustomize https://github.com/keycloak/keycloak-k8s-resources/kubernetes | kubectl apply -f -

@@ -1,0 +1,24 @@
+---
+# HTTPRoute для Grafana на HTTPS listener
+# Проксирует HTTPS трафик к сервису Grafana
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana-server
+  namespace: kube-prometheus-stack  # Измените namespace, если Prometheus Kube Stack установлен в другом namespace (например, monitoring)
+spec:
+  hostnames:
+    - "grafana.buildbyte.ru"
+  parentRefs:
+    - name: service-gateway
+      namespace: default
+      sectionName: https  # HTTPS listener (порт 443)
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kube-prometheus-stack-grafana  # Стандартное имя сервиса Grafana в Prometheus Kube Stack
+          port: 80
+          weight: 1

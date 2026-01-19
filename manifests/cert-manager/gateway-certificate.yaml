@@ -1,0 +1,16 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-tls-cert
+  namespace: default
+spec:
+  secretName: gateway-tls-cert   # <- критично, должен совпадать с certificateRefs в Gateway
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - argo.buildbyte.ru
+    - jenkins.buildbyte.ru
+    - vault.buildbyte.ru
+    - grafana.buildbyte.ru
+    - keycloak.buildbyte.ru 

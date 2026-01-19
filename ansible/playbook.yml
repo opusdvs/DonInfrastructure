@@ -1,0 +1,9 @@
+---
+# Плейбук для установки NFS сервера
+
+- name: Установка NFS сервера
+  hosts: nfs_servers
+  become: yes
+  roles:
+    - users
+    - nfs-server

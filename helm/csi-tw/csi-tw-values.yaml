@@ -1,0 +1,45 @@
+# Токен с доступом к сетевым дискам + кластерам k8s
+TW_API_SECRET: ""
+# ID из панели
+TW_CLUSTER_ID: "1068143"
+
+provisionerName: network-drives.csi.timeweb.cloud
+# plugin container image options
+image:
+  # image name
+  repository: cr-internal.twcstorage.ru/network-drives-csi/driver
+  # image tag
+  tag: 2
+  # image pull policy
+  pullPolicy: Always
+
+# Node service options
+node:
+  # node service log level
+  logLevel: debug
+  # force logs as json
+  logJson: true
+
+# Controller service options
+controller:
+  # controller replica count
+  replicas: 1
+
+  # controller node selector
+  nodeSelector: {}
+
+  # controller toleration options
+  tolerations: []
+
+# RBAC options
+rbac:
+  createRoles: true
+  createServiceAccounts: true
+
+# metrics options
+metrics:
+  podMonitor:
+    enabled: false
+    port: metrics
+    path: /metrics
+    interval: 60s

@@ -1,0 +1,35 @@
+---
+# HTTPRoute для редиректа HTTP на HTTPS для Keycloak
+# Перенаправляет все HTTP запросы на HTTPS версию
+# 
+# Важно: В HTTPRoute с фильтром RequestRedirect НЕ указывается backendRefs,
+# потому что запрос перенаправляется на уровне Gateway, а не проксируется к сервису.
+# Сервис Keycloak указан в отдельном HTTPRoute на HTTPS listener.
+# 
+# Примечание: cert-manager автоматически создаст свой HTTPRoute для
+# /.well-known/acme-challenge/ на HTTP listener, который будет иметь
+# приоритет над этим правилом благодаря более специфичному пути
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-http-to-https-redirect
+  namespace: keycloak  # Измените namespace, если Keycloak установлен в другом namespace
+spec:
+  hostnames:
+    - "keycloak.buildbyte.ru"
+  parentRefs:
+    - name: service-gateway
+      namespace: default
+      sectionName: http  # HTTP listener (порт 80)
+  rules:
+    # Редирект всех HTTP запросов на HTTPS
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301  # Permanent Redirect
+            port: 443

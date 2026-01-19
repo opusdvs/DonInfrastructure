@@ -1,7 +1,7 @@
 variable "region" {
   type        = string
   description = "Region"
-  default     = "nl-1"
+  default     = "ru-1"
 }
 variable "project_name" {
   type        = string
