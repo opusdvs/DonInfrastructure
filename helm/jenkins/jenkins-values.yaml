@@ -90,10 +90,11 @@ controller:
     # The default configuration uses this secret to configure an admin user
     # If you don't need that user or use a different security realm, then you can disable it
     # -- Create secret for admin user
-    createSecret: true
+    createSecret: false
 
     # -- The name of an existing secret containing the admin credentials
-    existingSecret: ""
+    # Секрет создается External Secrets Operator из Vault
+    existingSecret: jenkins-admin-credentials
   # -- Email address for the administrator of the Jenkins instance
   jenkinsAdminEmail:
 

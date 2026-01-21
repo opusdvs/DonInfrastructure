@@ -18,6 +18,8 @@
 - Установленный Terraform (версия >= 0.13)
 - Настроенный `kubectl` для работы с кластером
 - Установленный Helm (версия 3.x+)
+- Установленный `jq` для работы с JSON (используется в инструкциях)
+- Установленный `htpasswd` для создания bcrypt хешей паролей (используется для Argo CD)
 - Доступ к панели управления Timeweb Cloud
 - API ключ Timeweb Cloud с правами на создание ресурсов
 - Доступ к Timeweb Cloud S3 Storage для хранения Terraform state
@@ -438,154 +440,9 @@ kubectl exec -it vault-0 -n vault -- vault status
 # cat /tmp/vault-unseal-key.txt
 ```
 
-### 6. Установка cert-manager
+### 6. Установка Keycloak Operator
 
-```bash
-# 1. Добавить Helm репозиторий
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-# 2. Установить cert-manager с поддержкой Gateway API
-helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  -f helm/cert-managar/cert-manager-values.yaml
-
-# 3. Проверить установку
-kubectl get pods -n cert-manager
-kubectl get crd | grep cert-manager
-```
-
-**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
-
-### 7. Создание Gateway
-
-```bash
-# 1. Применить Gateway
-kubectl apply -f manifests/gateway/gateway.yaml
-
-# 2. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway service-gateway -n default
-```
-
-**Примечание:** 
-- HTTP listener будет работать сразу после создания Gateway
-- HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на шаге 7)
-- Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
-
-
-### 8. Создание ClusterIssuer и сертификата
-
-```bash
-# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-# ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
-kubectl apply -f manifests/cert-manager/cluster-issuer.yaml
-
-# 2. Проверить ClusterIssuer
-kubectl get clusterissuer
-kubectl describe clusterissuer letsencrypt-prod
-
-# 3. Применить Certificate
-kubectl apply -f manifests/cert-manager/gateway-certificate.yaml
-
-# 4. Проверить статус Certificate
-kubectl get certificate -n default
-kubectl describe certificate gateway-tls-cert -n default
-
-# 5. Дождаться создания Secret (может занять несколько минут)
-# Cert-manager автоматически создаст Secret gateway-tls-cert после успешной выдачи сертификата
-watch kubectl get secret gateway-tls-cert -n default
-```
-
-**Важно:** 
-- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/cert-manager/cluster-issuer.yaml`
-- Gateway должен быть создан до ClusterIssuer, так как ClusterIssuer использует Gateway для HTTP-01 challenge
-- После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
-- Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `vault.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
-- При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
-
-### 9. Установка Jenkins и Argo CD
-
-**Важно:** Установите приложения ПЕРЕД созданием HTTPRoute, так как HTTPRoute ссылаются на сервисы этих приложений.
-
-```bash
-# 1. Добавить Helm репозитории
-helm repo add argo https://argoproj.github.io/argo-helm
-helm repo add jenkins https://charts.jenkins.io
-helm repo update
-
-# 2. Установить Argo CD
-helm upgrade --install argocd argo/argo-cd \
-  --namespace argocd \
-  --create-namespace \
-  -f helm/argocd/argocd-values.yaml
-
-# 3. Установить Jenkins
-helm upgrade --install jenkins jenkins/jenkins \
-  --namespace jenkins \
-  --create-namespace \
-  -f helm/jenkins/jenkins-values.yaml
-
-# 4. Проверить установку
-kubectl get pods -n argocd
-kubectl get pods -n jenkins
-
-# 5. Дождаться готовности сервисов
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-controller -n jenkins --timeout=300s
-```
-
-**Подробная инструкция:** См. документацию в соответствующих директориях
-
-**Получение паролей:**
-```bash
-# Пароль администратора Argo CD
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-
-# Пароль администратора Jenkins
-kubectl exec --namespace jenkins -it svc/jenkins -c jenkins -- /bin/cat /run/secrets/additional/chart-admin-password && echo
-```
-
-### 10. Установка Prometheus Kube Stack (Prometheus + Grafana)
-
-```bash
-# 1. Добавить Helm репозиторий Prometheus Community
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-# 2. Установить Prometheus Kube Stack
-helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --namespace kube-prometheus-stack \
-  --create-namespace \
-  -f helm/prom-kube-stack/prom-kube-stack-values.yaml
-
-# 3. Проверить установку
-kubectl get pods -n kube-prometheus-stack
-kubectl get prometheus -n kube-prometheus-stack
-kubectl get grafana -n kube-prometheus-stack
-
-# 4. Дождаться готовности компонентов
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n kube-prometheus-stack --timeout=300s
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n kube-prometheus-stack --timeout=300s
-```
-
-**Важно:**
-- Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-
-**Получение пароля администратора Grafana:**
-```bash
-# Пароль по умолчанию хранится в Secret
-kubectl get secret kube-prometheus-stack-grafana -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
-
-# Или если используется кастомный Secret
-kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
-```
-
-
-### 11. Установка Keycloak Operator
-
-#### 10.1. Установка оператора
+#### 6.1. Установка оператора
 
 ```bash
 # 1. Установить CRDs Keycloak Operator
@@ -601,7 +458,7 @@ kubectl get pods -n keycloak-system
 kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak-system --timeout=300s
 ```
 
-#### 10.2. Подготовка PostgreSQL для Keycloak
+#### 6.2. Подготовка PostgreSQL для Keycloak
 
 Keycloak настроен для использования внешнего PostgreSQL. Перед созданием Keycloak инстанса необходимо:
 
@@ -692,7 +549,7 @@ kubectl get secret postgresql-keycloak-credentials -n keycloak
 ```
 
 
-#### 10.3. Создание Keycloak инстанса
+#### 6.3. Создание Keycloak инстанса
 
 ```bash
 # 1. Создать Keycloak инстанс
@@ -732,6 +589,211 @@ kubectl get secret credential-keycloak -n keycloak -o jsonpath='{.data.ADMIN_PAS
 kubectl get secrets -n keycloak -o json | jq -r '.items[] | select(.data.ADMIN_PASSWORD != null) | .metadata.name'
 ```
 
+### 7. Установка cert-manager
+
+```bash
+# 1. Добавить Helm репозиторий
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# 2. Установить cert-manager с поддержкой Gateway API
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  -f helm/cert-managar/cert-manager-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n cert-manager
+kubectl get crd | grep cert-manager
+```
+
+**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+
+### 8. Создание Gateway
+
+```bash
+# 1. Применить Gateway
+kubectl apply -f manifests/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway service-gateway -n default
+```
+
+**Примечание:** 
+- HTTP listener будет работать сразу после создания Gateway
+- HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на шаге 7)
+- Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
+
+
+### 9. Создание ClusterIssuer и сертификата
+
+```bash
+# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
+# ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
+kubectl apply -f manifests/cert-manager/cluster-issuer.yaml
+
+# 2. Проверить ClusterIssuer
+kubectl get clusterissuer
+kubectl describe clusterissuer letsencrypt-prod
+
+# 3. Применить Certificate
+kubectl apply -f manifests/cert-manager/gateway-certificate.yaml
+
+# 4. Проверить статус Certificate
+kubectl get certificate -n default
+kubectl describe certificate gateway-tls-cert -n default
+
+# 5. Дождаться создания Secret (может занять несколько минут)
+# Cert-manager автоматически создаст Secret gateway-tls-cert после успешной выдачи сертификата
+watch kubectl get secret gateway-tls-cert -n default
+```
+
+**Важно:** 
+- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/cert-manager/cluster-issuer.yaml`
+- Gateway должен быть создан до ClusterIssuer, так как ClusterIssuer использует Gateway для HTTP-01 challenge
+- После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
+- Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `vault.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
+- При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
+
+### 10. Установка Jenkins и Argo CD
+
+**Важно:** Установите приложения ПЕРЕД созданием HTTPRoute, так как HTTPRoute ссылаются на сервисы этих приложений.
+
+#### 10.1. Сохранение секретов администраторов в Vault
+
+Перед установкой Argo CD и Jenkins сохраните пароли администраторов в Vault:
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить пароль администратора Argo CD (bcrypt хеш)
+# Для создания bcrypt хеша используйте: htpasswd -nbBC 10 "" <ВАШ_ПАРОЛЬ> | tr -d ':\n' | sed 's/$2y/$2a/'
+ARGO_ADMIN_PASSWORD_HASH=$(htpasswd -nbBC 10 "" "<ВАШ_ПАРОЛЬ>" | tr -d ':\n' | sed 's/$2y/$2a/')
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/argocd/admin password='$ARGO_ADMIN_PASSWORD_HASH'
+"
+
+# Сохранить credentials администратора Jenkins
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛЬ>'
+"
+```
+
+**Важно для Argo CD:**
+- Пароль должен быть bcrypt хешированным
+- Используйте команду: `htpasswd -nbBC 10 "" <пароль> | tr -d ':\n' | sed 's/$2y/$2a/'`
+- Сохраните хеш в Vault по пути `secret/argocd/admin` с ключом `password`
+
+#### 10.2. Создание ExternalSecret для синхронизации секретов
+
+```bash
+# Создать namespace для Argo CD и Jenkins (если еще не созданы)
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
+
+# Создать ExternalSecret для Argo CD
+kubectl apply -f manifests/argocd/admin-credentials-externalsecret.yaml
+
+# Создать ExternalSecret для Jenkins
+kubectl apply -f manifests/jenkins/admin-credentials-externalsecret.yaml
+
+# Проверить синхронизацию секретов
+kubectl get externalsecret -n argocd
+kubectl get externalsecret -n jenkins
+kubectl get secret argocd-admin-credentials -n argocd
+kubectl get secret jenkins-admin-credentials -n jenkins
+```
+
+#### 10.3. Установка Argo CD и Jenkins
+
+```bash
+# 1. Добавить Helm репозитории
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo add jenkins https://charts.jenkins.io
+helm repo update
+
+# 2. Установить Argo CD с использованием существующего секрета
+helm upgrade --install argocd argo/argo-cd \
+  --namespace argocd \
+  --create-namespace \
+  -f helm/argocd/argocd-values.yaml \
+  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-admin-credentials -n argocd -o jsonpath='{.data.password}' | base64 -d)"
+
+# 3. Установить Jenkins с использованием существующего секрета
+helm upgrade --install jenkins jenkins/jenkins \
+  --namespace jenkins \
+  --create-namespace \
+  -f helm/jenkins/jenkins-values.yaml \
+  --set controller.admin.existingSecret="jenkins-admin-credentials" \
+  --set controller.admin.createSecret=false
+
+# 4. Проверить установку
+kubectl get pods -n argocd
+kubectl get pods -n jenkins
+
+# 5. Дождаться готовности сервисов
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-controller -n jenkins --timeout=300s
+```
+
+**Получение паролей:**
+```bash
+# Пароль администратора Argo CD (из Vault через ExternalSecret)
+kubectl get secret argocd-admin-credentials -n argocd -o jsonpath='{.data.password}' | base64 -d | echo
+# Примечание: Это bcrypt хеш, для использования нужно знать исходный пароль
+
+# Пароль администратора Jenkins (из Vault через ExternalSecret)
+kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
+```
+
+### 11. Установка Prometheus Kube Stack (Prometheus + Grafana)
+
+```bash
+# 1. Добавить Helm репозиторий Prometheus Community
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# 2. Установить Prometheus Kube Stack
+helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  --namespace kube-prometheus-stack \
+  --create-namespace \
+  -f helm/prom-kube-stack/prom-kube-stack-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n kube-prometheus-stack
+kubectl get prometheus -n kube-prometheus-stack
+kubectl get grafana -n kube-prometheus-stack
+
+# 4. Дождаться готовности компонентов
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=grafana -n kube-prometheus-stack --timeout=300s
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n kube-prometheus-stack --timeout=300s
+```
+
+**Важно:**
+- Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
+
+**Получение пароля администратора Grafana:**
+```bash
+# Пароль по умолчанию хранится в Secret
+kubectl get secret kube-prometheus-stack-grafana -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
+
+# Или если используется кастомный Secret
+kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
+```
 
 ### 12. Установка Jaeger
 
@@ -809,7 +871,7 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 #### 14.1. Предварительные требования
 
 - Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
-- Получен пароль администратора Keycloak (см. раздел 10)
+- Получен пароль администратора Keycloak (см. раздел 6)
 - Все приложения установлены и доступны через HTTPS
 
 #### 14.2. Настройка клиентов в Keycloak
@@ -895,9 +957,6 @@ helm upgrade argocd argo/argo-cd \
 - [ ] ClusterIssuer создан и готов (Status: Ready)
 - [ ] Certificate создан и Secret `gateway-tls-cert` существует
 - [ ] HTTPS listener Gateway активирован (после создания Secret)
-- [ ] Argo CD установлен и сервисы готовы
-- [ ] Jenkins установлен и сервисы готовы
-- [ ] Prometheus Kube Stack установлен и сервисы готовы
 - [ ] PostgreSQL установлен и доступен
 - [ ] База данных и пользователь для Keycloak созданы в PostgreSQL
 - [ ] Секреты PostgreSQL для Keycloak сохранены в Vault (путь: `secret/keycloak/postgresql`)
@@ -906,6 +965,9 @@ helm upgrade argocd argo/argo-cd \
 - [ ] Адрес PostgreSQL обновлен в `keycloak-instance.yaml`
 - [ ] Keycloak Operator установлен и Keycloak инстанс готов
 - [ ] Keycloak успешно подключен к PostgreSQL (проверено в логах)
+- [ ] Argo CD установлен и сервисы готовы
+- [ ] Jenkins установлен и сервисы готовы
+- [ ] Prometheus Kube Stack установлен и сервисы готовы
 - [ ] Jaeger установлен и сервисы готовы
 - [ ] HTTPRoute для Argo CD созданы и привязаны к Gateway
 - [ ] HTTPRoute для Jenkins созданы и привязаны к Gateway
@@ -1007,6 +1069,8 @@ External Secrets Operator (синхронизирует секреты из Vaul
   ↓
 ClusterSecretStore для Vault (настройка подключения)
   ↓
+Keycloak Operator → Keycloak (использует секреты из External Secrets Operator)
+  ↓
 cert-manager (независимо)
   ↓
 Gateway (HTTP listener работает сразу)
@@ -1020,7 +1084,6 @@ HTTPS listener Gateway активируется (после создания Sec
 Приложения (установка):
   - Jenkins & Argo CD
   - Prometheus Kube Stack (Prometheus + Grafana)
-  - Keycloak Operator → Keycloak (использует секреты из External Secrets Operator)
   - Jaeger
   ↓
 HTTPRoute (ссылаются на Gateway и сервисы приложений)
@@ -1029,5 +1092,6 @@ HTTPRoute (ссылаются на Gateway и сервисы приложени�
 **Важно:**
 - **Vault** должен быть установлен до External Secrets Operator
 - **External Secrets Operator** должен быть установлен до приложений, которые используют секреты
+- **Keycloak** должен быть установлен ПЕРЕД Argo CD, Jenkins и Grafana, так как эти приложения используют Keycloak для SSO
 - Все секреты создаются через External Secrets Operator, который синхронизирует их из Vault
 - Секреты для Keycloak, Grafana и других приложений должны быть сохранены в Vault перед установкой приложений
