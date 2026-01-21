@@ -42,28 +42,11 @@ export TWC_TOKEN="your-timeweb-cloud-api-token"
 
 #### 1.2. Настройка Backend для Terraform State
 
-Terraform использует S3-совместимое хранилище Timeweb Cloud для хранения state. Настройте credentials:
-
-**Вариант 1: Переменные окружения (рекомендуется)**
+Terraform использует S3-совместимое хранилище Timeweb Cloud для хранения state. Настройте credentials через переменные окружения:
 
 ```bash
 export AWS_ACCESS_KEY_ID="your-s3-access-key"
 export AWS_SECRET_ACCESS_KEY="your-s3-secret-key"
-```
-
-**Вариант 2: Файл backend.hcl (не коммитьте в git!)**
-
-Создайте файл `terraform/backend.hcl`:
-
-```hcl
-access_key = "your-s3-access-key"
-secret_key = "your-s3-secret-key"
-```
-
-И используйте при инициализации:
-
-```bash
-terraform init -backend-config=backend.hcl
 ```
 
 **Важно:** 
@@ -124,7 +107,7 @@ cd terraform/services
 # Инициализировать Terraform (загрузит провайдеры и настроит backend)
 terraform init
 
-# Проверить план развертывания (опционально, но рекомендуется)
+# Проверить план развертывания (опционально)
 terraform plan
 
 # Применить конфигурацию и создать кластер
@@ -144,7 +127,7 @@ cd terraform/dev
 # Инициализировать Terraform (загрузит провайдеры и настроит backend)
 terraform init
 
-# Проверить план развертывания (опционально, но рекомендуется)
+# Проверить план развертывания (опционально)
 terraform plan
 
 # Применить конфигурацию и создать кластер
@@ -277,9 +260,12 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault 
 ```
 
 **Важно:**
-- Vault использует Raft storage backend (настроен в `helm/vault/vault-values.yaml`)
+- **ВНИМАНИЕ: Текущая конфигурация - это временный тестовый режим (standalone) для разработки!**
+- Vault использует file storage backend в standalone режиме (настроен в `helm/vault/vault-values.yaml`)
+- В продакшене будет настроен полноценный HA кластер с Raft storage и 3 репликами
 - StorageClass должен быть `nvme.network-drives.csi.timeweb.cloud`
 - Vault Agent Injector включен для инъекции секретов в поды
+- **При переключении с HA на Standalone режим:** см. инструкцию `helm/vault/UPGRADE_TO_STANDALONE.md`
 
 **Инициализация и разблокировка Vault:**
 ```bash
@@ -338,41 +324,130 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secret
 **Подробная документация:**
 - См. конфигурацию в `helm/external-secrets/external-secrets-values.yaml`
 
-#### 5.1. Настройка ClusterSecretStore для Vault
+#### 5.1. Настройка Kubernetes Auth в Vault для External Secrets Operator
 
-После установки External Secrets Operator необходимо настроить ClusterSecretStore для подключения к Vault:
+Перед настройкой ClusterSecretStore необходимо настроить Kubernetes auth в Vault для External Secrets Operator.
+
+**Подробная инструкция:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+
+**Краткая инструкция:**
 
 ```bash
-# 1. Настроить Kubernetes auth в Vault для External Secrets Operator
-# См. инструкцию по настройке Kubernetes auth в Vault (раздел 4.1 или отдельная инструкция)
+# 0. Аутентификация в Vault (получить root token)
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
 
-# 2. Создать роль в Vault для External Secrets Operator
-kubectl exec -it vault-0 -n vault -- vault write auth/kubernetes/role/external-secrets-operator \
+# Если root token не найден, получите его:
+# kubectl exec -n vault vault-0 -- vault operator init -key-shares=1 -key-threshold=1 -format=json | jq -r '.root_token' > /tmp/vault-root-token.txt
+
+# 0.1. Включить KV v2 секретный движок (если еще не включен)
+# ВАЖНО: Без этого шага вы получите ошибку 403 при создании секретов
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# 1. Проверить и включить Kubernetes auth method (если еще не включен)
+# ВАЖНО: Этот шаг обязателен! Без него вы получите ошибку 404 при настройке конфигурации
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault auth list | grep kubernetes || vault auth enable kubernetes
+"
+
+# 2. Настроить конфигурацию Kubernetes auth (используя CA сертификат из pod)
+# Если получаете ошибку "claim 'iss' is invalid", параметр disable_iss_validation=true уже добавлен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault write auth/kubernetes/config \
+  token_reviewer_jwt=\"\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)\" \
+  kubernetes_host=\"https://kubernetes.default.svc\" \
+  kubernetes_ca_cert=\"\$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)\" \
+  disable_iss_validation=true
+"
+
+# 3. Создать политику для External Secrets Operator
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault policy write external-secrets-policy - <<'EOF'
+path \"secret/data/*\" {
+  capabilities = [\"read\"]
+}
+EOF
+"
+
+# 4. Создать роль в Vault для External Secrets Operator
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault write auth/kubernetes/role/external-secrets-operator \
   bound_service_account_names=external-secrets \
   bound_service_account_namespaces=external-secrets-system \
   policies=external-secrets-policy \
   ttl=1h
+"
 
-# 3. Создать политику для External Secrets Operator
-kubectl exec -it vault-0 -n vault -- vault policy write external-secrets-policy - <<EOF
-path "secret/data/*" {
-  capabilities = ["read"]
-}
-EOF
+# 5. Проверить настройку
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault read auth/kubernetes/role/external-secrets-operator
+"
+```
+
+#### 5.2. Настройка ClusterSecretStore для Vault
+
+После настройки Kubernetes auth в Vault примените ClusterSecretStore:
+
+**Важно:** Перед применением ClusterSecretStore убедитесь, что External Secrets Operator установлен и CRD созданы!
+
+```bash
+# 1. Проверить, что External Secrets Operator установлен
+kubectl get pods -n external-secrets-system
+
+# 2. Проверить, что CRD установлены
+kubectl get crd | grep external-secrets
+
+# Должны быть установлены следующие CRD:
+# - clustersecretstores.external-secrets.io
+# - externalsecrets.external-secrets.io
+# - secretstores.external-secrets.io
+
+# Если CRD не установлены, установите External Secrets Operator (см. раздел 5)
+
+# 3. Дождаться готовности External Secrets Operator (если только что установили)
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
 
 # 4. Применить ClusterSecretStore
 kubectl apply -f manifests/external-secrets/vault-cluster-secret-store.yaml
 
 # 5. Проверить ClusterSecretStore
 kubectl get clustersecretstore
-kubectl describe clustersecretstore vault-backend
+kubectl describe clustersecretstore vault
 ```
 
 **Важно:**
-- Kubernetes auth в Vault должен быть настроен перед созданием ClusterSecretStore
+- **Vault должен быть разблокирован (unsealed)** перед применением ClusterSecretStore
+- External Secrets Operator должен быть установлен ПЕРЕД применением ClusterSecretStore (см. раздел 5)
+- Kubernetes auth в Vault должен быть настроен перед созданием ClusterSecretStore (см. раздел 5.1)
 - ServiceAccount `external-secrets` должен существовать в namespace `external-secrets-system` (создается автоматически при установке)
 - Роль в Vault должна иметь доступ к путям секретов, которые будут использоваться
 - После настройки ClusterSecretStore можно создавать ExternalSecret ресурсы для синхронизации секретов
+
+**Проверка статуса Vault:**
+```bash
+# Проверить, что Vault разблокирован
+kubectl exec -it vault-0 -n vault -- vault status
+
+# Если Vault запечатан (Sealed: true), разблокируйте его:
+# kubectl exec -it vault-0 -n vault -- vault operator unseal <unseal-key>
+# 
+# Получить unseal key:
+# cat /tmp/vault-unseal-key.txt
+```
 
 ### 6. Установка cert-manager
 
@@ -611,6 +686,9 @@ kubectl apply -f manifests/external-secrets/vault-cluster-secret-store.yaml
 export VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
 export VAULT_TOKEN="<ваш-root-token>"
 
+# Убедиться, что KV v2 секретный движок включен (если еще не включен)
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+
 # Сохранить секреты PostgreSQL для Keycloak
 vault kv put secret/keycloak/postgresql \
   username=keycloak \
@@ -638,19 +716,6 @@ kubectl describe externalsecret postgresql-keycloak-credentials -n keycloak
 kubectl get secret postgresql-keycloak-credentials -n keycloak
 ```
 
-**Альтернатива (только для первоначальной настройки):**
-
-Если External Secrets Operator еще не настроен, можно временно создать Secret напрямую:
-
-```bash
-kubectl create secret generic postgresql-keycloak-credentials \
-  --from-literal=username=keycloak \
-  --from-literal=password='<ВАШ_ПАРОЛЬ>' \
-  --from-literal=database=keycloak \
-  -n keycloak
-```
-
-**Важно:** После настройки External Secrets Operator все секреты должны управляться через него.
 
 #### 10.3. Создание Keycloak инстанса
 
@@ -934,6 +999,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 - **Устранение неполадок Gateway:** `manifests/gateway/TROUBLESHOOTING.md`
 - **cert-manager:** `manifests/cert-manager/README.md`
 - **Vault:** `helm/vault/VAULT_TOKEN.md`, `helm/vault/VAULT_AUTH_METHODS.md`, `helm/vault/VAULT_SECRETS_INJECTION.md`
+- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** `manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`
 - **Prometheus Kube Stack:** `helm/prom-kube-stack/GRAFANA_ADMIN_PASSWORD.md`
 - **Keycloak:** `manifests/keycloak/README.md`
 - **Подключение Keycloak к PostgreSQL:** `manifests/keycloak/POSTGRESQL_SETUP.md`

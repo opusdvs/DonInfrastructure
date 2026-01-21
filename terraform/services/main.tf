@@ -9,9 +9,9 @@ resource "twc_k8s_cluster" "k8s-cluster" {
 }
 
 resource "twc_k8s_node_group" "k8s-cluster-node-group" {
-  count = 2
+  count = length(var.node_group_name)
   cluster_id = twc_k8s_cluster.k8s-cluster.id
-  name       = var.node_group_name
+  name       = var.node_group_name[count.index]
   preset_id  = data.twc_k8s_preset.k8s-preset-node.id
   node_count = var.node_group_node_count
 }
