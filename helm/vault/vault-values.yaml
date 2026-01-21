@@ -277,7 +277,7 @@ server:
     # and store data there. This is only used when using a Replica count of 1, and
     # using a stateful set. This should be HCL.
     config: |
-      ui = true
+      ui = false
 
       listener "tcp" {
         tls_disable = 1
@@ -314,7 +314,7 @@ server:
     # deployment. Default is to use a Consul for its HA storage backend.
     # This should be HCL.
     config: |
-      ui = true
+      ui = false
 
       listener "tcp" {
         tls_disable = 1
@@ -355,7 +355,7 @@ ui:
   # serviceType can be used to control the type of service created. For
   # example, setting this to "LoadBalancer" will create an external load
   # balancer (for supported K8S installations) to access the UI.
-  enabled: true
+  enabled: false
   serviceType: "ClusterIP"
   serviceNodePort: null
   externalPort: 8200
