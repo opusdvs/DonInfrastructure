@@ -1386,6 +1386,34 @@ grafana:
     create: true
     autoMount: true
 
+  ## Grafana configuration file (grafana.ini)
+  ## OIDC configuration for Keycloak authentication
+  grafana.ini:
+    auth.generic_oauth:
+      enabled: true
+      name: Keycloak
+      client_id: grafana
+      allow_sign_up: true
+      # client_secret будет взят из переменной окружения GF_AUTH_OIDC_CLIENT_SECRET
+      client_secret: ${GF_AUTH_OIDC_CLIENT_SECRET}
+      scopes: openid,profile,email,group
+      auth_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/auth
+      token_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/token
+      api_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/userinfo
+      allow_sign_up: true
+      # Настройка маппинга ролей на основе групп из Keycloak
+      # Группа 'GrafanaAdmin' -> роль Admin, группа 'viewer' -> роль Viewer, остальные -> Viewer
+      role_attribute_path: contains(group[*], 'GrafanaAdmin') && 'Admin' || contains(group[*], 'viewer') && 'Viewer' || 'Viewer'
+    server:
+      root_url: https://grafana.buildbyte.ru
+
+  ## Environment variables from secrets (для чтения client_secret из Secret)
+  envValueFrom:
+    GF_AUTH_OIDC_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-oidc-secret
+        key: client-secret
+
   sidecar:
     dashboards:
       enabled: true

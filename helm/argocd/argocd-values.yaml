@@ -43,7 +43,7 @@ global:
   # -- Default domain used by all components
   ## Used for ingresses, certificates, SSO, notifications, etc.
  
-
+  domain: "argo.buildbyte.ru"
   # -- Runtime class name for all components
   runtimeClassName: ""
 
@@ -1940,7 +1940,8 @@ redisSecretInit:
 server:
   # -- Argo CD server name
   name: server
-
+  config:
+    url: "https://argo.buildbyte.ru"
   # -- The number of server pods to run
   replicas: 1
 
@@ -3540,7 +3541,7 @@ notifications:
 
   # -- Argo CD dashboard url; used in place of {{.context.argocdUrl}} in templates
   # @default -- `""` (defaults to https://`global.domain`)
-  argocdUrl: ""
+  argocdUrl: "https://argo.buildbyte.ru"
 
   # -- Runtime class name for the notifications controller
   # @default -- `""` (defaults to global.runtimeClassName)
