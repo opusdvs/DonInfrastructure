@@ -266,8 +266,11 @@ server:
   # no arguments are given to helm. This requires a PVC for data storage to use
   # the "file" backend.  This mode is not highly available and should not be scaled
   # past a single replica.
+  # 
+  # ВНИМАНИЕ: Это временный тестовый режим для разработки!
+  # В продакшене будет настроен полноценный HA кластер с Raft storage.
   standalone:
-    enabled: "-"
+    enabled: true
 
     # config is a raw string of default configuration when using a Stateful
     # deployment. Default is to use a PersistentVolumeClaim mounted at /vault/data
@@ -300,9 +303,12 @@ server:
   # for its storage backend.  The default configuration provided will work the Consul
   # Helm project by default.  It is possible to manually configure Vault to use a
   # different HA backend.
+  #
+  # ВНИМАНИЕ: Сейчас отключен для тестового режима (standalone).
+  # В продакшене будет включен HA режим с Raft storage и 3 репликами.
   ha:
-    enabled: true
-    replicas: 3
+    enabled: false
+    replicas: 1
 
     # config is a raw string of default configuration when using a Stateful
     # deployment. Default is to use a Consul for its HA storage backend.

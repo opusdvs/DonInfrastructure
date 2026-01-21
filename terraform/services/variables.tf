@@ -29,9 +29,9 @@ variable "cluster_version" {
   default     = "v1.34.3+k0s.0"
 }
 variable "node_group_name" {
-  type        = string
+  type        = list(string)
   description = "Node group name"
-  default     = "services-node-group"
+  default     = ["services-node-group-1"]
 }
 variable "node_group_node_count" {
   type        = number
@@ -43,4 +43,10 @@ variable "home_dir" {
   type        = string
   description = "Home directory"
   default     = "/home/opusdv"
+}
+
+variable "cpu" {
+  type        = number
+  description = "CPU"
+  default     = 4
 }
