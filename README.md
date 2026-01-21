@@ -340,6 +340,14 @@ export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
 # Если root token не найден, получите его:
 # kubectl exec -n vault vault-0 -- vault operator init -key-shares=1 -key-threshold=1 -format=json | jq -r '.root_token' > /tmp/vault-root-token.txt
 
+# 0.1. Включить KV v2 секретный движок (если еще не включен)
+# ВАЖНО: Без этого шага вы получите ошибку 403 при создании секретов
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
 # 1. Проверить и включить Kubernetes auth method (если еще не включен)
 # ВАЖНО: Этот шаг обязателен! Без него вы получите ошибку 404 при настройке конфигурации
 kubectl exec -it vault-0 -n vault -- sh -c "
@@ -677,6 +685,9 @@ kubectl apply -f manifests/external-secrets/vault-cluster-secret-store.yaml
 # Подключиться к Vault
 export VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
 export VAULT_TOKEN="<ваш-root-token>"
+
+# Убедиться, что KV v2 секретный движок включен (если еще не включен)
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
 
 # Сохранить секреты PostgreSQL для Keycloak
 vault kv put secret/keycloak/postgresql \
