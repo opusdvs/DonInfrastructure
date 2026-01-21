@@ -446,9 +446,9 @@ kubectl exec -it vault-0 -n vault -- vault status
 
 ```bash
 # 1. Установить CRDs Keycloak Operator
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakclients.k8s.keycloak.org-v1.yml
+# Используем конкретную версию для стабильности (26.5.1)
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
 
 # 2. Установить Keycloak Operator
 kubectl apply -f manifests/keycloak/keycloak-operator-install.yaml
@@ -1025,6 +1025,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 ## Дополнительная документация
 
 - **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+- **Настройка Keycloak Authentication для Jenkins:** [`helm/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/jenkins/JENKINS_KEYCLOAK_SETUP.md)
 
 ## Важные замечания
 
