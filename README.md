@@ -621,18 +621,12 @@ kubectl get svc -A | grep postgresql
 # Найти pod PostgreSQL
 kubectl get pods -A | grep postgresql
 
-# Скопировать SQL скрипт в pod
-kubectl cp manifests/keycloak/create-keycloak-database.sql \
-  <postgresql-pod-name>:/tmp/create-keycloak-database.sql \
-  -n <postgresql-namespace>
-
-# Отредактировать пароль в скрипте (замените на безопасный пароль!)
-kubectl exec -it <postgresql-pod-name> -n <postgresql-namespace> -- \
-  sed -i "s/change-me-please/<ВАШ_ПАРОЛЬ>/g" /tmp/create-keycloak-database.sql
-
-# Выполнить скрипт
-kubectl exec -it <postgresql-pod-name> -n <postgresql-namespace> -- \
-  psql -U postgres -f /tmp/create-keycloak-database.sql
+# Выполнить SQL команды напрямую (замените <ВАШ_ПАРОЛЬ> на безопасный пароль!)
+kubectl exec -it <postgresql-pod-name> -n <postgresql-namespace> -- psql -U postgres <<EOF
+CREATE DATABASE keycloak;
+CREATE USER keycloak WITH PASSWORD '<ВАШ_ПАРОЛЬ>';
+GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
+EOF
 ```
 
 **Шаг 3: Обновить конфигурацию Keycloak**
