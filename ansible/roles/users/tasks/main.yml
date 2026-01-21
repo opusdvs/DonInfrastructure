@@ -1,0 +1,55 @@
+---
+# Роль для создания списка пользователей
+
+- name: Генерация паролей для пользователей
+  shell: python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16)))"
+  register: password_result
+  changed_when: false
+  loop: "{{ nfs_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Сохранение сгенерированных паролей
+  set_fact:
+    generated_passwords: "{{ generated_passwords | default({}) | combine({item.item.name: item.stdout}) }}"
+  loop: "{{ password_result.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Создание групп для пользователей
+  group:
+    name: "{{ item.group | default(item.name) }}"
+    state: present
+  become: yes
+  loop: "{{ nfs_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Создание пользователей
+  user:
+    name: "{{ item.name }}"
+    group: "{{ item.group | default(item.name) }}"
+    shell: "{{ item.shell | default('/bin/bash') }}"
+    home: "{{ item.home | default('/home/' + item.name) }}"
+    create_home: "{{ item.create_home | default(true) }}"
+    password: "{{ generated_passwords[item.name] | password_hash('sha512') }}"
+    update_password: "{{ item.update_password | default('always') }}"
+    state: present
+  become: yes
+  loop: "{{ nfs_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: user_creation_result
+
+- name: Вывод паролей созданных пользователей
+  debug:
+    msg:
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "Пользователь: {{ item.item.name }}"
+      - "Пароль: {{ generated_passwords[item.item.name] }}"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  loop: "{{ user_creation_result.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.changed
+  no_log: false

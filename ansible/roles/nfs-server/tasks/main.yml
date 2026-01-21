@@ -1,0 +1,36 @@
+---
+# Минимальная роль для установки NFS сервера
+
+- name: Установка NFS сервера
+  package:
+    name: "{{ nfs_package }}"
+    state: present
+  become: yes
+
+- name: Создание директории для экспорта
+  file:
+    path: "{{ nfs_export_path }}"
+    state: directory
+    mode: '0755'
+  become: yes
+
+- name: Настройка /etc/exports
+  lineinfile:
+    path: /etc/exports
+    line: "{{ nfs_export_path }} {{ nfs_export_options }}"
+    regexp: "^{{ nfs_export_path }}"
+    state: present
+  become: yes
+  notify: restart nfs
+
+- name: Запуск и включение NFS сервера
+  systemd:
+    name: "{{ nfs_service }}"
+    state: started
+    enabled: yes
+  become: yes
+
+- name: Экспорт NFS директорий
+  command: exportfs -ra
+  become: yes
+  changed_when: false

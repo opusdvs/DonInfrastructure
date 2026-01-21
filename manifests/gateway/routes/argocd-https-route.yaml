@@ -1,0 +1,24 @@
+---
+# HTTPRoute для Argo CD на HTTPS listener
+# Проксирует HTTPS трафик к сервису argocd-server
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  hostnames:
+    - "argo.buildbyte.ru"
+  parentRefs:
+    - name: service-gateway
+      namespace: default
+      sectionName: https  # HTTPS listener (порт 443)
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: argocd-server
+          port: 80
+          weight: 1

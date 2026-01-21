@@ -1,0 +1,12 @@
+---
+# Inventory файл для Ansible
+
+all:
+  children:
+    nfs_servers:
+      hosts:
+        nfs-server:
+          ansible_host: 89.19.215.138
+          ansible_user: root
+          # Если используется SSH ключ:
+          # ansible_ssh_private_key_file: ~/.ssh/id_rsa

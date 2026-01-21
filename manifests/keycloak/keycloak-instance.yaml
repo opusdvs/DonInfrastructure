@@ -1,0 +1,93 @@
+---
+# Keycloak Custom Resource
+# Использует внешний PostgreSQL для хранения данных
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+  labels:
+    app: keycloak
+spec:
+  # Количество реплик Keycloak
+  instances: 1
+  
+  # Конфигурация базы данных PostgreSQL
+  database:
+    vendor: postgres
+    # Host PostgreSQL (замените на реальный адрес вашего PostgreSQL)
+    # Если PostgreSQL в том же кластере, используйте формат: <service-name>.<namespace>.svc.cluster.local
+    host: postgresql.postgresql.svc.cluster.local
+    # Порт PostgreSQL (по умолчанию 5432)
+    port: 5432
+    # Имя базы данных
+    databaseSecret:
+      name: postgresql-keycloak-credentials
+      key: database
+    # Username из Secret
+    usernameSecret:
+      name: postgresql-keycloak-credentials
+      key: username
+    # Password из Secret
+    passwordSecret:
+      name: postgresql-keycloak-credentials
+      key: password
+  
+  # Хостнейм для доступа к Keycloak
+  hostname:
+    hostname: keycloak.buildbyte.ru
+    strict: false  # Отключить строгую проверку hostname
+  
+  # HTTP настройки
+  http:
+    httpEnabled: true
+    tlsSecret: ""  # Пустая строка означает использование HTTP (без TLS)
+  
+  # Proxy настройки (для работы за Gateway)
+  proxy:
+    headers: xforwarded
+  
+  # Ресурсы для контейнера Keycloak
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  
+  # Дополнительные опции для Keycloak
+  additionalOptions:
+    - name: health-enabled
+      value: "true"
+    - name: metrics-enabled
+      value: "true"
+  
+  # Настройки для production (опционально)
+  # production: false  # По умолчанию false для development режима
+  
+  # Unsupported настройки (для расширенной конфигурации)
+  # unsupported:
+  #   podTemplate:
+  #     spec:
+  #       containers:
+  #         - name: keycloak
+  #           env:
+  #             - name: KC_HEALTH_ENABLED
+  #               value: "true"
+  #           livenessProbe:
+  #             httpGet:
+  #               path: /health
+  #               port: 8080
+  #             initialDelaySeconds: 300
+  #             periodSeconds: 30
+  #             timeoutSeconds: 10
+  #             failureThreshold: 5
+  #           readinessProbe:
+  #             httpGet:
+  #               path: /health
+  #               port: 8080
+  #             initialDelaySeconds: 300
+  #             periodSeconds: 15
+  #             timeoutSeconds: 10
+  #             failureThreshold: 5

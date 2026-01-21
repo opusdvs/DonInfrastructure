@@ -1,0 +1,35 @@
+---
+# Роль для установки NFS клиента на узлах Kubernetes
+
+- name: Определение дистрибутива
+  setup:
+    gather_subset: distribution
+  register: os_facts
+
+- name: Установка NFS клиента (Debian/Ubuntu)
+  package:
+    name: nfs-common
+    state: present
+  become: yes
+  when: ansible_distribution in ['Debian', 'Ubuntu']
+
+- name: Установка NFS клиента (RHEL/CentOS/Rocky)
+  package:
+    name: nfs-utils
+    state: present
+  become: yes
+  when: ansible_distribution in ['RedHat', 'CentOS', 'Rocky', 'Fedora']
+
+- name: Проверка наличия mount.nfs
+  stat:
+    path: /sbin/mount.nfs
+  register: mount_nfs_check
+
+- name: Проверка наличия mount.nfs4
+  stat:
+    path: /sbin/mount.nfs4
+  register: mount_nfs4_check
+
+- name: Вывод результата установки
+  debug:
+    msg: "NFS клиент установлен. mount.nfs: {{ mount_nfs_check.stat.exists }}, mount.nfs4: {{ mount_nfs4_check.stat.exists }}"

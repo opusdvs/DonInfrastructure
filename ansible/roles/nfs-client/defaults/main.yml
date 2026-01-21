@@ -1,0 +1,6 @@
+---
+# Значения по умолчанию для роли nfs-client
+
+# Пакет NFS клиента (определяется автоматически по дистрибутиву)
+# Для Debian/Ubuntu: nfs-common
+# Для RHEL/CentOS/Rocky: nfs-utils

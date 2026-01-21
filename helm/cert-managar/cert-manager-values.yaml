@@ -1,0 +1,23 @@
+---
+# Helm values для cert-manager с поддержкой Gateway API
+# Использование:
+#   helm upgrade --install cert-manager jetstack/cert-manager \
+#     --namespace cert-manager \
+#     --create-namespace \
+#     --version v1.14.5 \
+#     -f helm/cert-manager-values.yaml
+
+# Включение Gateway API support (обязательно для работы с Gateway API)
+config:
+  enableGatewayAPI: true
+
+# Установка CRDs
+installCRDs: true
+
+# Глобальные настройки
+global:
+  leaderElection:
+    namespace: cert-manager
+
+# Настройки контроллеров
+replicaCount: 1
