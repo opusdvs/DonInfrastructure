@@ -138,7 +138,6 @@ terraform apply
 # ~/kubeconfig-dev-cluster.yaml
 ```
 
-**Подробная инструкция для Dev кластера:** [`terraform/dev/README.md`](terraform/dev/README.md)
 
 **Важно:** После создания кластера убедитесь, что `kubectl` настроен для работы с кластером:
 
@@ -209,7 +208,6 @@ kubectl get pods -n nginx-gateway
 kubectl get gatewayclass
 ```
 
-**Подробная инструкция:** `manifests/gateway/README.md`
 
 ### 3. Установка CSI драйвера в панели Timeweb Cloud
 
@@ -265,7 +263,6 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault 
 - В продакшене будет настроен полноценный HA кластер с Raft storage и 3 репликами
 - StorageClass должен быть `nvme.network-drives.csi.timeweb.cloud`
 - Vault Agent Injector включен для инъекции секретов в поды
-- **При переключении с HA на Standalone режим:** см. инструкцию `helm/vault/UPGRADE_TO_STANDALONE.md`
 
 **Инициализация и разблокировка Vault:**
 ```bash
@@ -282,16 +279,8 @@ kubectl exec -n vault vault-0 -- vault operator unseal $(cat /tmp/vault-unseal-k
 
 **Получение root token:**
 ```bash
-# См. инструкцию: helm/vault/VAULT_TOKEN.md
 cat /tmp/vault-root-token.txt
 ```
-
-**Подробная документация:**
-- `helm/vault/VAULT_TOKEN.md` - получение root token
-- `helm/vault/VAULT_AUTH_METHODS.md` - настройка методов аутентификации
-- `helm/vault/VAULT_SECRETS_INJECTION.md` - инъекция секретов в поды
-- `helm/vault/CSI_TROUBLESHOOTING.md` - устранение проблем с CSI
-- `helm/vault/RAFT_TROUBLESHOOTING.md` - устранение проблем с Raft storage
 
 ### 5. Установка External Secrets Operator
 
@@ -469,8 +458,6 @@ kubectl get crd | grep cert-manager
 
 **Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
-**Подробная инструкция:** `manifests/cert-manager/README.md`
-
 ### 7. Создание Gateway
 
 ```bash
@@ -487,7 +474,6 @@ kubectl describe gateway service-gateway -n default
 - HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на шаге 7)
 - Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
 
-**Устранение неполадок:** `manifests/gateway/TROUBLESHOOTING.md`
 
 ### 8. Создание ClusterIssuer и сертификата
 
@@ -518,8 +504,6 @@ watch kubectl get secret gateway-tls-cert -n default
 - После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
 - Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `vault.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
 - При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
-
-**Подробная инструкция:** `manifests/cert-manager/README.md`
 
 ### 9. Установка Jenkins и Argo CD
 
@@ -588,7 +572,6 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-- Пароль администратора Grafana можно изменить (см. `helm/prom-kube-stack/GRAFANA_ADMIN_PASSWORD.md`)
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -599,8 +582,6 @@ kubectl get secret kube-prometheus-stack-grafana -n kube-prometheus-stack -o jso
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
-**Подробная документация:**
-- `helm/prom-kube-stack/GRAFANA_ADMIN_PASSWORD.md` - изменение пароля администратора Grafana
 
 ### 11. Установка Keycloak Operator
 
@@ -757,9 +738,6 @@ kubectl get secret credential-keycloak -n keycloak -o jsonpath='{.data.ADMIN_PAS
 kubectl get secrets -n keycloak -o json | jq -r '.items[] | select(.data.ADMIN_PASSWORD != null) | .metadata.name'
 ```
 
-**Подробная документация:**
-- `manifests/keycloak/README.md` - полная инструкция по установке и настройке
-- `manifests/keycloak/POSTGRESQL_SETUP.md` - подробная инструкция по подключению к PostgreSQL
 
 ### 12. Установка Jaeger
 
@@ -906,11 +884,6 @@ helm upgrade argocd argo/argo-cd \
 
 2. Выполните вход через Keycloak и проверьте права доступа
 
-**Подробная инструкция:** См. [`docs/keycloak-sso-setup.md`](docs/keycloak-sso-setup.md)
-
-**Дополнительная документация:**
-- [`helm/vault/VAULT_KEYCLOAK_OIDC.md`](helm/vault/VAULT_KEYCLOAK_OIDC.md) — подробная инструкция по настройке Vault с Keycloak
-
 ## Полный чек-лист установки
 
 ### Services кластер (инфраструктурные компоненты)
@@ -995,17 +968,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 
 ## Дополнительная документация
 
-- **Gateway API:** `manifests/gateway/README.md`
-- **Устранение неполадок Gateway:** `manifests/gateway/TROUBLESHOOTING.md`
-- **cert-manager:** `manifests/cert-manager/README.md`
-- **Vault:** `helm/vault/VAULT_TOKEN.md`, `helm/vault/VAULT_AUTH_METHODS.md`, `helm/vault/VAULT_SECRETS_INJECTION.md`
-- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** `manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`
-- **Prometheus Kube Stack:** `helm/prom-kube-stack/GRAFANA_ADMIN_PASSWORD.md`
-- **Keycloak:** `manifests/keycloak/README.md`
-- **Подключение Keycloak к PostgreSQL:** `manifests/keycloak/POSTGRESQL_SETUP.md`
-- **Настройка SSO с Keycloak:** `docs/keycloak-sso-setup.md`
-- **Argo CD курс:** `docs/argocd-course/`
-- **Vault курс:** `docs/vault-course/`
+- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
 
 ## Важные замечания
 
