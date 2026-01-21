@@ -1,6 +1,6 @@
 ---
 # Keycloak Custom Resource
-# Использует встроенную H2 базу данных (не требует PostgreSQL)
+# Использует внешний PostgreSQL для хранения данных
 apiVersion: k8s.keycloak.org/v2alpha1
 kind: Keycloak
 metadata:
@@ -12,10 +12,26 @@ spec:
   # Количество реплик Keycloak
   instances: 1
   
-  # Конфигурация базы данных
-  # Если не указано, используется встроенная H2 база данных
-  # database:
-  #   vendor: h2  # Встроенная H2 база данных (по умолчанию)
+  # Конфигурация базы данных PostgreSQL
+  database:
+    vendor: postgres
+    # Host PostgreSQL (замените на реальный адрес вашего PostgreSQL)
+    # Если PostgreSQL в том же кластере, используйте формат: <service-name>.<namespace>.svc.cluster.local
+    host: postgresql.postgresql.svc.cluster.local
+    # Порт PostgreSQL (по умолчанию 5432)
+    port: 5432
+    # Имя базы данных
+    databaseSecret:
+      name: postgresql-keycloak-credentials
+      key: database
+    # Username из Secret
+    usernameSecret:
+      name: postgresql-keycloak-credentials
+      key: username
+    # Password из Secret
+    passwordSecret:
+      name: postgresql-keycloak-credentials
+      key: password
   
   # Хостнейм для доступа к Keycloak
   hostname:
