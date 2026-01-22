@@ -461,14 +461,42 @@ vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный
 "
 
 # Сохранить секреты PostgreSQL в Vault
-# Замените <ВАШ_ПАРОЛЬ_POSTGRES> на безопасный пароль для пользователя postgres
-# Замените <ВАШ_ПАРОЛЬ_REPLICATION> на безопасный пароль для репликации
+# ВАЖНО: Замените <ВАШ_ПАРОЛЬ_POSTGRES> и <ВАШ_ПАРОЛЬ_REPLICATION> на реальные пароли
+# Используйте одинарные кавычки для паролей, чтобы избежать проблем с специальными символами
+# Пример выполнения команды:
+#   export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+#   kubectl exec -it vault-0 -n vault -- sh -c "
+#     export VAULT_ADDR='http://127.0.0.1:8200'
+#     export VAULT_TOKEN='$VAULT_TOKEN'
+#     vault kv put secret/postgresql/admin \
+#       postgres_password='MySecurePassword123!' \
+#       replication_password='MyReplicationPassword456!'
+#   "
+
+# Альтернативный способ: использовать переменные окружения для паролей
+# POSTGRES_PASSWORD='<ВАШ_ПАРОЛЬ_POSTGRES>'
+# REPLICATION_PASSWORD='<ВАШ_ПАРОЛЬ_REPLICATION>'
+# export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+# kubectl exec -it vault-0 -n vault -- sh -c "
+#   export VAULT_ADDR='http://127.0.0.1:8200'
+#   export VAULT_TOKEN='$VAULT_TOKEN'
+#   vault kv put secret/postgresql/admin \
+#     postgres_password='$POSTGRES_PASSWORD' \
+#     replication_password='$REPLICATION_PASSWORD'
+# "
+
+# Проверить, что секреты сохранены правильно
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/postgresql/admin \
-  postgres-password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
-  replication-password='<ВАШ_ПАРОЛЬ_REPLICATION>'
+vault kv get secret/postgresql/admin
+"
+
+# Проверить структуру данных в JSON формате (для отладки)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get -format=json secret/postgresql/admin | jq '.data.data'
 "
 
 # Сохранить секреты для Keycloak (будет использоваться позже)
@@ -493,8 +521,11 @@ vault kv put secret/keycloak/postgresql \
 Создайте ExternalSecret для синхронизации секретов из Vault:
 
 ```bash
-# Применить ExternalSecret манифест для PostgreSQL
-kubectl apply -f manifests/postgresql/postgresql-credentials-externalsecret.yaml
+# Создать namespace для PostgreSQL (если еще не создан)
+kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
+
+# Применить ExternalSecret манифест для PostgreSQL admin credentials
+kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n postgresql
@@ -502,6 +533,43 @@ kubectl describe externalsecret postgresql-admin-credentials -n postgresql
 
 # Проверить созданный Secret
 kubectl get secret postgresql-admin-credentials -n postgresql
+
+# Если возникла ошибка SecretSyncedError, выполните диагностику:
+# 1. Проверить детали ошибки:
+kubectl describe externalsecret postgresql-admin-credentials -n postgresql | grep -A 20 "Status:"
+
+# 2. Проверить, существуют ли секреты в Vault:
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/postgresql/admin
+"
+
+# 3. Если секреты не существуют, сохраните их:
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/postgresql/admin \
+  postgres_password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
+  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>'
+"
+
+# 4. Проверить логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=100 | grep -i "postgresql\|error\|failed"
+
+# 5. Проверить права доступа External Secrets Operator к Vault:
+# Убедитесь, что роль external-secrets-operator имеет права на чтение secret/postgresql/admin
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault policy read external-secrets-operator
+"
+
+# 6. Принудительно обновить ExternalSecret:
+kubectl delete externalsecret postgresql-admin-credentials -n postgresql
+kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
 ```
 
 #### 6.3. Установка PostgreSQL через Helm Bitnami
@@ -519,8 +587,8 @@ helm upgrade --install postgresql bitnami/postgresql \
   --namespace postgresql \
   -f helm/postgresql/postgresql-values.yaml \
   --set auth.existingSecret="postgresql-admin-credentials" \
-  --set auth.secretKeys.adminPasswordKey="postgres-password" \
-  --set auth.secretKeys.replicationPasswordKey="replication-password"
+  --set auth.secretKeys.adminPasswordKey="postgres_password" \
+  --set auth.secretKeys.replicationPasswordKey="replication_password"
 
 # 4. Проверить установку
 kubectl get pods -n postgresql
