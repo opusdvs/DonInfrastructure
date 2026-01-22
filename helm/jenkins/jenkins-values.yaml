@@ -156,7 +156,12 @@ controller:
   containerEnvFrom: []
 
   # -- Environment variables for Jenkins Container
-  containerEnv: []
+  containerEnv:
+    - name: KEYCLOAK_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: jenkins-keycloak-secret
+          key: client-secret
   #   - name: http_proxy
   #     value: "http://192.168.64.1:3128"
 
@@ -416,6 +421,7 @@ controller:
     - workflow-aggregator:608.v67378e9d3db_1
     - git:5.8.1
     - configuration-as-code:2031.veb_a_fdda_b_3ffd
+    - keycloak:latest
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
@@ -539,19 +545,50 @@ controller:
     # Ignored if securityRealm is defined in controller.JCasC.configScripts
     # -- Jenkins Config as Code Security Realm-section
     securityRealm: |-
-      local:
-        allowsSignup: false
-        enableCaptcha: false
-        users:
-        - id: "${chart-admin-username}"
-          name: "Jenkins Admin"
-          password: "${chart-admin-password}"
+      keycloak:
+        keycloakJson: |
+          {
+            "realm": "master",
+            "auth-server-url": "https://keycloak.buildbyte.ru/",
+            "ssl-required": "external",
+            "resource": "jenkins",
+            "public-client": false,
+            "credentials": {
+              "secret": "${KEYCLOAK_CLIENT_SECRET}"
+            }
+          }
 
     # Ignored if authorizationStrategy is defined in controller.JCasC.configScripts
     # -- Jenkins Config as Code Authorization Strategy-section
     authorizationStrategy: |-
-      loggedInUsersCanDoAnything:
-        allowAnonymousRead: false
+      keycloak:
+        groups:
+          - name: "admin"
+            permissions:
+              - "Overall/Administer"
+              - "Overall/Read"
+              - "Overall/RunScripts"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Configure"
+              - "Job/Create"
+              - "Job/Delete"
+              - "Job/Discover"
+              - "Job/Move"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "View/Configure"
+              - "View/Create"
+              - "View/Delete"
+              - "View/Read"
+          - name: "developer"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "View/Read"
 
     # -- Annotations for the JCasC ConfigMap
     configMapAnnotations: {}

@@ -440,15 +440,254 @@ kubectl exec -it vault-0 -n vault -- vault status
 # cat /tmp/vault-unseal-key.txt
 ```
 
-### 6. Установка Keycloak Operator
+### 6. Установка PostgreSQL
 
-#### 6.1. Установка оператора
+**Важно:** PostgreSQL должен быть установлен перед Keycloak, так как Keycloak использует PostgreSQL в качестве базы данных.
+
+#### 6.1. Создание секретов в Vault для PostgreSQL
+
+Перед установкой PostgreSQL необходимо создать секреты в Vault:
+
+```bash
+# Подключиться к Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить секреты PostgreSQL в Vault
+# ВАЖНО: Замените <ВАШ_ПАРОЛЬ_POSTGRES> и <ВАШ_ПАРОЛЬ_REPLICATION> на реальные пароли
+# Используйте одинарные кавычки для паролей, чтобы избежать проблем с специальными символами
+# Пример выполнения команды:
+#   export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+#   kubectl exec -it vault-0 -n vault -- sh -c "
+#     export VAULT_ADDR='http://127.0.0.1:8200'
+#     export VAULT_TOKEN='$VAULT_TOKEN'
+#     vault kv put secret/postgresql/admin \
+#       postgres_password='MySecurePassword123!' \
+#       replication_password='MyReplicationPassword456!'
+#   "
+
+# Альтернативный способ: использовать переменные окружения для паролей
+# POSTGRES_PASSWORD='<ВАШ_ПАРОЛЬ_POSTGRES>'
+# REPLICATION_PASSWORD='<ВАШ_ПАРОЛЬ_REPLICATION>'
+# export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+# kubectl exec -it vault-0 -n vault -- sh -c "
+#   export VAULT_ADDR='http://127.0.0.1:8200'
+#   export VAULT_TOKEN='$VAULT_TOKEN'
+#   vault kv put secret/postgresql/admin \
+#     postgres_password='$POSTGRES_PASSWORD' \
+#     replication_password='$REPLICATION_PASSWORD'
+# "
+
+# Проверить, что секреты сохранены правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/postgresql/admin
+"
+
+# Проверить структуру данных в JSON формате (для отладки)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get -format=json secret/postgresql/admin | jq '.data.data'
+"
+
+# Сохранить секреты для Keycloak (будет использоваться позже)
+# Замените <ВАШ_ПАРОЛЬ_KEYCLOAK> на безопасный пароль для пользователя keycloak
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/keycloak/postgresql \
+  username=keycloak \
+  password='<ВАШ_ПАРОЛЬ_KEYCLOAK>' \
+  database=keycloak
+"
+```
+
+**Важно:**
+- Используйте надежные пароли для production окружения
+- Пароли должны быть достаточно длинными (минимум 16 символов)
+- Сохраните пароли в безопасном месте (например, в менеджере паролей)
+
+#### 6.2. Создание ExternalSecret для PostgreSQL
+
+Создайте ExternalSecret для синхронизации секретов из Vault:
+
+```bash
+# Создать namespace для PostgreSQL (если еще не создан)
+kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
+
+# Применить ExternalSecret манифест для PostgreSQL admin credentials
+kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
+
+# Проверить синхронизацию секретов
+kubectl get externalsecret -n postgresql
+kubectl describe externalsecret postgresql-admin-credentials -n postgresql
+
+# Проверить созданный Secret
+kubectl get secret postgresql-admin-credentials -n postgresql
+
+# Если возникла ошибка SecretSyncedError, выполните диагностику:
+# 1. Проверить детали ошибки:
+kubectl describe externalsecret postgresql-admin-credentials -n postgresql | grep -A 20 "Status:"
+
+# 2. Проверить, существуют ли секреты в Vault:
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/postgresql/admin
+"
+
+# 3. Если секреты не существуют, сохраните их:
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/postgresql/admin \
+  postgres_password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
+  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>'
+"
+
+# 4. Проверить логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=100 | grep -i "postgresql\|error\|failed"
+
+# 5. Проверить права доступа External Secrets Operator к Vault:
+# Убедитесь, что роль external-secrets-operator имеет права на чтение secret/postgresql/admin
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault policy read external-secrets-operator
+"
+
+# 6. Принудительно обновить ExternalSecret:
+kubectl delete externalsecret postgresql-admin-credentials -n postgresql
+kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
+```
+
+#### 6.3. Установка PostgreSQL через Helm Bitnami
+
+```bash
+# 1. Добавить Helm репозиторий Bitnami
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+
+# 2. Создать namespace для PostgreSQL
+kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить PostgreSQL
+helm upgrade --install postgresql bitnami/postgresql \
+  --namespace postgresql \
+  -f helm/postgresql/postgresql-values.yaml \
+  --set auth.existingSecret="postgresql-admin-credentials" \
+  --set auth.secretKeys.adminPasswordKey="postgres_password" \
+  --set auth.secretKeys.replicationPasswordKey="replication_password"
+
+# 4. Проверить установку
+kubectl get pods -n postgresql
+kubectl get statefulset -n postgresql
+kubectl get pvc -n postgresql
+
+# 5. Дождаться готовности PostgreSQL
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n postgresql --timeout=600s
+```
+
+**Важно:**
+- PostgreSQL использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
+- Размер хранилища по умолчанию: 8Gi (можно изменить в `helm/postgresql/postgresql-values.yaml`)
+- Secret `postgresql-admin-credentials` должен быть создан через External Secrets Operator перед установкой
+
+**Проверка подключения к PostgreSQL:**
+```bash
+# Получить имя pod PostgreSQL
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+
+# Подключиться к PostgreSQL
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
+
+# В psql выполнить:
+# \l - список баз данных
+# \du - список пользователей
+# \q - выход
+```
+
+#### 6.4. Создание базы данных и пользователя для Keycloak
+
+После установки PostgreSQL создайте базу данных и пользователя для Keycloak:
+
+```bash
+# Получить имя pod PostgreSQL
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+
+# Получить пароль из Secret
+KEYCLOAK_PASSWORD=$(kubectl get secret postgresql-keycloak-credentials -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)
+
+# Если Secret еще не создан, используйте пароль из Vault
+# Или создайте ExternalSecret для keycloak/postgresql перед выполнением этой команды
+
+# Создать базу данных и пользователя
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres <<EOF
+CREATE DATABASE keycloak;
+CREATE USER keycloak WITH PASSWORD '${KEYCLOAK_PASSWORD}';
+GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
+\c keycloak
+GRANT ALL ON SCHEMA public TO keycloak;
+EOF
+```
+
+**Альтернативный способ:** Если ExternalSecret для Keycloak еще не создан, можно использовать пароль напрямую:
+
+```bash
+# Получить пароль из Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+KEYCLOAK_PASSWORD=$(kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get -field=password secret/keycloak/postgresql
+")
+
+# Создать базу данных и пользователя
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres <<EOF
+CREATE DATABASE keycloak;
+CREATE USER keycloak WITH PASSWORD '${KEYCLOAK_PASSWORD}';
+GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
+\c keycloak
+GRANT ALL ON SCHEMA public TO keycloak;
+EOF
+```
+
+**Проверка создания базы данных:**
+```bash
+# Подключиться к PostgreSQL и проверить
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "\l" | grep keycloak
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "\du" | grep keycloak
+```
+
+**Важно:**
+- Адрес PostgreSQL для Keycloak: `postgresql.postgresql.svc.cluster.local:5432`
+- База данных: `keycloak`
+- Пользователь: `keycloak`
+- Пароль: из Secret `postgresql-keycloak-credentials` (синхронизируется из Vault)
+
+### 7. Установка Keycloak Operator
+
+#### 7.1. Установка оператора
 
 ```bash
 # 1. Установить CRDs Keycloak Operator
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/keycloakclients.k8s.keycloak.org-v1.yml
+# Используем конкретную версию для стабильности (26.5.1)
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
 
 # 2. Установить Keycloak Operator
 kubectl apply -f manifests/keycloak/keycloak-operator-install.yaml
@@ -458,18 +697,17 @@ kubectl get pods -n keycloak-system
 kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak-system --timeout=300s
 ```
 
-#### 6.2. Подготовка PostgreSQL для Keycloak
+#### 7.2. Подготовка PostgreSQL для Keycloak
 
-Keycloak настроен для использования внешнего PostgreSQL. Перед созданием Keycloak инстанса необходимо:
+Keycloak настроен для использования внешнего PostgreSQL. После установки PostgreSQL (см. раздел 6) необходимо создать базу данных и пользователя для Keycloak.
 
 **Шаг 1: Определить адрес PostgreSQL**
 
-```bash
-# Найти адрес PostgreSQL сервиса
-kubectl get svc -A | grep postgresql
+Адрес PostgreSQL: `postgresql.postgresql.svc.cluster.local:5432`
 
-# Формат адреса: <service-name>.<namespace>.svc.cluster.local
-# Пример: postgresql.postgresql.svc.cluster.local
+```bash
+# Проверить доступность PostgreSQL
+kubectl get svc -n postgresql
 ```
 
 **Шаг 2: Создать базу данных и пользователя в PostgreSQL**
@@ -549,7 +787,7 @@ kubectl get secret postgresql-keycloak-credentials -n keycloak
 ```
 
 
-#### 6.3. Создание Keycloak инстанса
+#### 7.3. Создание Keycloak инстанса
 
 ```bash
 # 1. Создать Keycloak инстанс
@@ -589,7 +827,7 @@ kubectl get secret credential-keycloak -n keycloak -o jsonpath='{.data.ADMIN_PAS
 kubectl get secrets -n keycloak -o json | jq -r '.items[] | select(.data.ADMIN_PASSWORD != null) | .metadata.name'
 ```
 
-### 7. Установка cert-manager
+### 8. Установка cert-manager
 
 ```bash
 # 1. Добавить Helm репозиторий
@@ -609,7 +847,7 @@ kubectl get crd | grep cert-manager
 
 **Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
-### 8. Создание Gateway
+### 9. Создание Gateway
 
 ```bash
 # 1. Применить Gateway
@@ -626,7 +864,7 @@ kubectl describe gateway service-gateway -n default
 - Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
 
 
-### 9. Создание ClusterIssuer и сертификата
+### 10. Создание ClusterIssuer и сертификата
 
 ```bash
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
@@ -656,7 +894,7 @@ watch kubectl get secret gateway-tls-cert -n default
 - Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `vault.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
 - При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
 
-### 10. Установка Jenkins и Argo CD
+### 11. Установка Jenkins и Argo CD
 
 **Важно:** Установите приложения ПЕРЕД созданием HTTPRoute, так как HTTPRoute ссылаются на сервисы этих приложений.
 
@@ -760,7 +998,7 @@ kubectl get secret argocd-admin-credentials -n argocd -o jsonpath='{.data.passwo
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
-### 11. Установка Prometheus Kube Stack (Prometheus + Grafana)
+### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
@@ -795,7 +1033,7 @@ kubectl get secret kube-prometheus-stack-grafana -n kube-prometheus-stack -o jso
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
-### 12. Установка Jaeger
+### 13. Установка Jaeger
 
 ```bash
 # 1. Добавить Helm репозиторий Jaeger
@@ -827,7 +1065,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 **Подробная документация:**
 - См. конфигурацию в `helm/jaeger/jaeger-values.yaml`
 
-### 13. Создание HTTPRoute для приложений
+### 14. Создание HTTPRoute для приложений
 
 **Важно:** HTTPRoute должны создаваться ПОСЛЕ установки приложений, так как они ссылаются на сервисы Argo CD и Jenkins.
 
@@ -864,17 +1102,17 @@ kubectl describe httproute keycloak-server -n keycloak
 kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 ```
 
-### 14. Настройка SSO (Single Sign-On) с Keycloak
+### 15. Настройка SSO (Single Sign-On) с Keycloak
 
 После установки всех компонентов можно настроить единый вход (SSO) для всех приложений через Keycloak.
 
-#### 14.1. Предварительные требования
+#### 15.1. Предварительные требования
 
 - Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
 - Получен пароль администратора Keycloak (см. раздел 6)
 - Все приложения установлены и доступны через HTTPS
 
-#### 14.2. Настройка клиентов в Keycloak
+#### 15.2. Настройка клиентов в Keycloak
 
 1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
 2. Создайте Realm (если еще не создан) или используйте существующий (например, `services`)
@@ -884,7 +1122,7 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
    - **Grafana** — клиент `grafana`
    - **Vault** — клиент `vault`
 
-#### 14.3. Настройка приложений
+#### 15.3. Настройка приложений
 
 **Argo CD:**
 - Настройка OIDC в `helm/argocd/argocd-values.yaml`
@@ -903,7 +1141,7 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 - Настройка через JCasC или UI Jenkins
 - Использование плагина Keycloak Authentication Plugin
 
-#### 14.4. Создание групп и пользователей
+#### 15.4. Создание групп и пользователей
 
 1. В Keycloak создайте группы:
    - `GrafanaAdmin` — администраторы Grafana
@@ -913,7 +1151,7 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 
 2. Назначьте пользователей в соответствующие группы
 
-#### 14.5. Применение изменений
+#### 15.5. Применение изменений
 
 ```bash
 # Обновить Grafana (если изменили конфигурацию)
@@ -931,7 +1169,7 @@ helm upgrade argocd argo/argo-cd \
   -f helm/argocd/argocd-values.yaml
 ```
 
-#### 14.6. Проверка SSO
+#### 15.6. Проверка SSO
 
 1. Откройте приложения в браузере:
    - `https://grafana.buildbyte.ru` — должна появиться кнопка "Sign in with Keycloak"
@@ -957,7 +1195,10 @@ helm upgrade argocd argo/argo-cd \
 - [ ] ClusterIssuer создан и готов (Status: Ready)
 - [ ] Certificate создан и Secret `gateway-tls-cert` существует
 - [ ] HTTPS listener Gateway активирован (после создания Secret)
-- [ ] PostgreSQL установлен и доступен
+- [ ] Секреты PostgreSQL сохранены в Vault (путь: `secret/postgresql/admin` и `secret/keycloak/postgresql`)
+- [ ] ExternalSecret `postgresql-admin-credentials` создан и синхронизирован
+- [ ] Secret `postgresql-admin-credentials` создан External Secrets Operator
+- [ ] PostgreSQL установлен через Helm Bitnami и доступен
 - [ ] База данных и пользователь для Keycloak созданы в PostgreSQL
 - [ ] Секреты PostgreSQL для Keycloak сохранены в Vault (путь: `secret/keycloak/postgresql`)
 - [ ] ExternalSecret `postgresql-keycloak-credentials` создан и синхронизирован
@@ -1025,6 +1266,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 ## Дополнительная документация
 
 - **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+- **Настройка Keycloak Authentication для Jenkins:** [`helm/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/jenkins/JENKINS_KEYCLOAK_SETUP.md)
 
 ## Важные замечания
 
@@ -1032,6 +1274,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
    - **Vault должен быть установлен одним из первых** (для хранения секретов)
    - **External Secrets Operator должен быть установлен после Vault** (для синхронизации секретов)
    - **ClusterSecretStore должен быть настроен после External Secrets Operator** (для подключения к Vault)
+   - **PostgreSQL должен быть установлен перед Keycloak** (Keycloak использует PostgreSQL в качестве базы данных)
    - Gateway должен быть создан перед ClusterIssuer (ClusterIssuer ссылается на Gateway для HTTP-01 challenge)
    - Приложения должны быть установлены перед созданием HTTPRoute (HTTPRoute ссылаются на их сервисы)
    - Secret для TLS создается cert-manager автоматически, но HTTPS listener не будет работать до его создания
@@ -1043,7 +1286,9 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
    - **External Secrets Operator** → требует **Vault** (для синхронизации секретов)
    - **ClusterSecretStore** → требует **Vault** и **Kubernetes auth в Vault** (для подключения External Secrets Operator)
    - **ExternalSecret** → требует **ClusterSecretStore** и **секреты в Vault** (для синхронизации)
+   - **PostgreSQL** → требует **секреты через External Secrets Operator** (для паролей администратора и репликации)
    - **Приложения** → требуют **секреты через External Secrets Operator** (Keycloak, Grafana и т.д.)
+   - **Keycloak** → требует **PostgreSQL** (в качестве базы данных)
    - **ClusterIssuer** → требует **Gateway** (для HTTP-01 challenge через Gateway API)
    - **Certificate** → требует **ClusterIssuer** и **Gateway** (для HTTP-01 challenge)
    - **HTTPRoute** → требует **Gateway** и **сервисы приложений** (backendRefs ссылаются на сервисы)
@@ -1069,7 +1314,9 @@ External Secrets Operator (синхронизирует секреты из Vaul
   ↓
 ClusterSecretStore для Vault (настройка подключения)
   ↓
-Keycloak Operator → Keycloak (использует секреты из External Secrets Operator)
+PostgreSQL (использует секреты из External Secrets Operator)
+  ↓
+Keycloak Operator → Keycloak (использует PostgreSQL и секреты из External Secrets Operator)
   ↓
 cert-manager (независимо)
   ↓
