@@ -463,27 +463,13 @@ vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный
 # Сохранить секреты PostgreSQL в Vault
 # ВАЖНО: Замените <ВАШ_ПАРОЛЬ_POSTGRES> и <ВАШ_ПАРОЛЬ_REPLICATION> на реальные пароли
 # Используйте одинарные кавычки для паролей, чтобы избежать проблем с специальными символами
-# Пример выполнения команды:
-#   export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-#   kubectl exec -it vault-0 -n vault -- sh -c "
-#     export VAULT_ADDR='http://127.0.0.1:8200'
-#     export VAULT_TOKEN='$VAULT_TOKEN'
-#     vault kv put secret/postgresql/admin \
-#       postgres_password='MySecurePassword123!' \
-#       replication_password='MyReplicationPassword456!'
-#   "
-
-# Альтернативный способ: использовать переменные окружения для паролей
-# POSTGRES_PASSWORD='<ВАШ_ПАРОЛЬ_POSTGRES>'
-# REPLICATION_PASSWORD='<ВАШ_ПАРОЛЬ_REPLICATION>'
-# export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-# kubectl exec -it vault-0 -n vault -- sh -c "
-#   export VAULT_ADDR='http://127.0.0.1:8200'
-#   export VAULT_TOKEN='$VAULT_TOKEN'
-#   vault kv put secret/postgresql/admin \
-#     postgres_password='$POSTGRES_PASSWORD' \
-#     replication_password='$REPLICATION_PASSWORD'
-# "
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/postgresql/admin \
+  postgres_password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
+  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>'
+"
 
 # Проверить, что секреты сохранены правильно
 kubectl exec -it vault-0 -n vault -- sh -c "
