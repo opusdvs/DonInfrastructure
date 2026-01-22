@@ -1388,6 +1388,26 @@ grafana:
   grafana.ini:
     server:
       root_url: https://grafana.buildbyte.ru
+    
+    # OIDC configuration for Keycloak
+    auth.generic_oauth:
+      enabled: true
+      name: Keycloak
+      allow_sign_up: true
+      scopes: openid,profile,email,groups
+      client_id: grafana
+      auth_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/auth
+      token_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/token
+      api_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/userinfo
+      # Использовать PKCE для безопасности
+      use_pkce: true
+      # Разрешить автоматическую регистрацию пользователей
+      allow_sign_up: true
+      # Использовать email как username
+      use_email: true
+      # Роли на основе групп из Keycloak
+      # Группа GrafanaAdmins получает роль Admin, GrafanaEditors - Editor, остальные - Viewer
+      role_attribute_path: contains(groups[*], 'GrafanaAdmins') && 'Admin' || contains(groups[*], 'GrafanaEditors') && 'Editor' || 'Viewer'
 
   sidecar:
     dashboards:
@@ -1472,6 +1492,28 @@ grafana:
   #   configMap: certs-configmap
   #   readOnly: true
 
+  # Монтирование секрета для OIDC Client Secret (не используется, так как используется переменная окружения)
+  # Секрет grafana-oidc-secret создается через External Secrets Operator
+  # Client Secret устанавливается через переменную окружения GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET (см. env ниже)
+  extraSecretMounts: []
+  # - name: grafana-oidc-secret
+  #   secretName: grafana-oidc-secret
+  #   defaultMode: 0440
+  #   mountPath: /etc/grafana/secrets/grafana-oidc-secret
+  #   readOnly: true
+
+  # Переменные окружения для Grafana
+  # Grafana автоматически читает переменные окружения с префиксом GF_
+  # Client Secret будет установлен через envFrom из секрета grafana-oidc-secret
+  # Секрет должен содержать ключ GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET (см. ExternalSecret)
+  env: {}
+  envFrom: []
+
+  envValueFrom:
+    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-oidc-secret
+        key: client_secret
   deleteDatasources: []
   # - name: example-datasource
   #   orgId: 1

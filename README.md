@@ -894,6 +894,148 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.pas
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
+#### 10.4. Настройка OIDC для Argo CD через Keycloak
+
+**Важно:** Перед настройкой OIDC убедитесь, что:
+- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
+- В Keycloak создан клиент `argocd` с правильными redirect URIs
+- Получен Client Secret для клиента `argocd`
+
+**Шаг 1: Создать клиент в Keycloak**
+
+1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
+2. Выберите Realm (например, `master`)
+3. Перейдите в **Clients** → **Create client**
+4. Настройте клиент:
+   - **Client ID:** `argocd`
+   - **Client protocol:** `openid-connect`
+   - **Access Type:** `confidential`
+   - **Valid Redirect URIs:** 
+     - `https://argo.buildbyte.ru/api/dex/callback`
+     - `https://argo.buildbyte.ru/auth/callback`
+   - **Web Origins:** `https://argo.buildbyte.ru`
+5. Сохраните клиент и перейдите на вкладку **Credentials**
+6. Скопируйте **Secret** (Client Secret)
+
+**Шаг 2: Сохранить Client Secret в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Client Secret для Argo CD OIDC
+# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
+# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/argocd/oidc \
+  client_secret='<ВАШ_CLIENT_SECRET>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/argocd/oidc
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+
+ExternalSecret синхронизирует Client Secret из Vault напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`, который используется Argo CD для OIDC аутентификации.
+
+```bash
+# Создать ExternalSecret для синхронизации OIDC client-secret напрямую в argocd-secret
+# Этот ExternalSecret обновляет секрет argocd-secret с ключом oidc.keycloak.clientSecret
+kubectl apply -f manifests/argocd/argocd-secret-oidc-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret argocd-secret-oidc -n argocd
+kubectl describe externalsecret argocd-secret-oidc -n argocd
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret argocd-secret-oidc -n argocd --timeout=60s
+
+# Проверить, что ключ добавлен в argocd-secret
+kubectl get secret argocd-secret -n argocd -o jsonpath='{.data}' | jq 'keys' | grep -i oidc
+
+# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
+kubectl get secret argocd-secret -n argocd -o jsonpath='{.data.oidc\.keycloak\.clientSecret}' | base64 -d && echo
+
+# Если значение содержит строку типа "$argocd-oidc-secret:client_secret", значит синхронизация не прошла
+# Проверьте логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i argocd-secret-oidc
+```
+
+**Важно:**
+- ExternalSecret использует `creationPolicy: Merge`, что позволяет добавлять ключ в существующий секрет `argocd-secret`
+- Ключ `oidc.keycloak.clientSecret` должен содержать реальное значение Client Secret из Keycloak, а не строку с `$`
+- Если синхронизация не прошла, проверьте:
+  - Существует ли секрет в Vault по пути `secret/argocd/oidc` с ключом `client_secret`
+  - Настроен ли ClusterSecretStore для Vault
+  - Работает ли External Secrets Operator
+
+**Шаг 4: Обновить Argo CD с OIDC конфигурацией**
+
+OIDC конфигурация уже настроена в `helm/argocd/argocd-values.yaml`. Обновите Argo CD:
+
+```bash
+# Обновить Argo CD с OIDC конфигурацией
+helm upgrade argocd argo/argo-cd \
+  --namespace argocd \
+  -f helm/argocd/argocd-values.yaml \
+  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
+
+# Проверить, что Argo CD перезапустился
+kubectl get pods -n argocd
+kubectl logs -f deployment/argocd-server -n argocd | grep -i oidc
+```
+
+**Шаг 5: Настроить RBAC в Argo CD**
+
+RBAC уже настроен в `helm/argocd/argocd-values.yaml`. Группа `ArgoCDAdmins` из Keycloak привязана к встроенной роли `role:admin`, которая дает полные права администратора в Argo CD.
+
+Текущая конфигурация:
+```yaml
+configs:
+  rbac:
+    # Настройка RBAC на основе групп из Keycloak
+    # Группа ArgoCDAdmins должна быть создана в Keycloak
+    policy.csv: |
+      # Привязать группу ArgoCDAdmins из Keycloak к встроенной роли admin
+      # Роль admin дает полные права администратора в Argo CD
+      g, "ArgoCDAdmins", role:admin
+```
+
+**Важно:**
+- Группа `ArgoCDAdmins` должна быть создана в Keycloak
+- Пользователи должны быть добавлены в эту группу
+- Встроенная роль `role:admin` предоставляет все административные права в Argo CD
+- Если нужно добавить другие группы или роли, отредактируйте `policy.csv` в `helm/argocd/argocd-values.yaml`
+
+**Проверка OIDC:**
+
+1. Откройте Argo CD: `https://argo.buildbyte.ru`
+2. Должна появиться кнопка **"LOG IN VIA KEYCLOAK"** или **"LOG IN VIA OIDC"**
+3. Выполните вход через Keycloak
+4. Проверьте, что пользователь успешно аутентифицирован
+
+**Важно:**
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/argocd/argocd-values.yaml`
+- Client Secret синхронизируется из Vault через External Secrets Operator напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`
+- ExternalSecret `argocd-secret-oidc` использует `creationPolicy: Merge` для добавления ключа в существующий секрет
+- RBAC настраивается на основе групп из Keycloak через `policy.csv`
+- **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/argocd/OIDC_TROUBLESHOOTING.md`
+
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
@@ -991,6 +1133,128 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
+#### 12.3. Настройка OIDC для Grafana через Keycloak
+
+**Важно:** Перед настройкой OIDC убедитесь, что:
+- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
+- В Keycloak создан клиент `grafana` с правильными redirect URIs
+- Получен Client Secret для клиента `grafana`
+
+**Шаг 1: Создать клиент в Keycloak**
+
+1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
+2. Выберите Realm (например, `services`)
+3. Перейдите в **Clients** → **Create client**
+4. Настройте клиент:
+   - **Client ID:** `grafana`
+   - **Client protocol:** `openid-connect`
+   - **Access Type:** `confidential`
+   - **Valid Redirect URIs:** 
+     - `https://grafana.buildbyte.ru/login/generic_oauth`
+   - **Web Origins:** `https://grafana.buildbyte.ru`
+5. Сохраните клиент и перейдите на вкладку **Credentials**
+6. Скопируйте **Secret** (Client Secret)
+
+**Шаг 2: Сохранить Client Secret в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Client Secret для Grafana OIDC
+# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
+# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/grafana/oidc \
+  client_secret='<ВАШ_CLIENT_SECRET>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/grafana/oidc
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+
+ExternalSecret синхронизирует Client Secret из Vault в секрет `grafana-oidc-secret`, который используется Grafana для OIDC аутентификации через переменную окружения.
+
+```bash
+# Создать ExternalSecret для синхронизации OIDC client-secret для Grafana
+kubectl apply -f manifests/grafana/oidc-secret-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret grafana-oidc-secret -n kube-prometheus-stack
+kubectl describe externalsecret grafana-oidc-secret -n kube-prometheus-stack
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret grafana-oidc-secret -n kube-prometheus-stack --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
+
+# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
+
+# Если значение содержит строку типа "$grafana-oidc-secret:client_secret", значит синхронизация не прошла
+# Проверьте логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i grafana-oidc-secret
+```
+
+**Важно:**
+- ExternalSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
+- OIDC конфигурация уже настроена в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Если синхронизация не прошла, проверьте:
+  - Существует ли секрет в Vault по пути `secret/grafana/oidc` с ключом `client_secret`
+  - Настроен ли ClusterSecretStore для Vault
+  - Работает ли External Secrets Operator
+
+**Шаг 4: Перезапустить Grafana (если необходимо)**
+
+После создания секрета Grafana автоматически использует его для OIDC. Если OIDC не работает, перезапустите Grafana:
+
+```bash
+# Перезапустить Grafana
+kubectl rollout restart deployment kube-prometheus-stack-grafana -n kube-prometheus-stack
+
+# Проверить логи Grafana для подтверждения OIDC конфигурации
+kubectl logs -f deployment/kube-prometheus-stack-grafana -n kube-prometheus-stack | grep -i oauth
+
+# Проверить, что переменная окружения установлена в поде Grafana
+GRAFANA_POD=$(kubectl get pods -n kube-prometheus-stack -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+```
+
+**Проверка OIDC:**
+
+1. Откройте Grafana: `https://grafana.buildbyte.ru`
+2. Должна появиться кнопка **"LOG IN VIA KEYCLOAK"** или **"LOG IN VIA OIDC"**
+3. Выполните вход через Keycloak
+4. Проверьте, что пользователь успешно аутентифицирован
+
+**Важно:**
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml`)
+- Client Secret синхронизируется из Vault через External Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Grafana автоматически читает переменные окружения с префиксом `GF_` для конфигурации
+- Роли настраиваются на основе групп из Keycloak через `role_attribute_path`:
+  - Группа `GrafanaAdmins` получает роль `Admin`
+  - Группа `GrafanaEditors` получает роль `Editor`
+  - Остальные пользователи получают роль `Viewer`
+
 ### 13. Установка Jaeger
 
 ```bash
@@ -1087,11 +1351,25 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 - [ ] Keycloak Operator установлен и Keycloak инстанс готов
 - [ ] Keycloak успешно подключен к PostgreSQL (проверено в логах)
 - [ ] Argo CD установлен и сервисы готовы
+- [ ] Клиент `argocd` создан в Keycloak с правильными redirect URIs
+- [ ] Client Secret для Argo CD сохранен в Vault (путь: `secret/argocd/oidc` с ключом `client_secret`)
+- [ ] ExternalSecret `argocd-secret-oidc` создан и синхронизирован в namespace `argocd`
+- [ ] Ключ `oidc.keycloak.clientSecret` добавлен в секрет `argocd-secret` с реальным значением (не строка с `$`)
+- [ ] Argo CD обновлен с OIDC конфигурацией
+- [ ] OIDC аутентификация через Keycloak работает (проверено в браузере)
+- [ ] RBAC настроен для использования групп из Keycloak (опционально)
 - [ ] Jenkins установлен и сервисы готовы
 - [ ] Admin credentials для Grafana сохранены в Vault (путь: `secret/grafana/admin`)
 - [ ] ExternalSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
 - [ ] Secret `grafana-admin` создан External Secrets Operator
 - [ ] Prometheus Kube Stack установлен и сервисы готовы
+- [ ] Клиент `grafana` создан в Keycloak с правильными redirect URIs
+- [ ] Client Secret для Grafana сохранен в Vault (путь: `secret/grafana/oidc` с ключом `client_secret`)
+- [ ] ExternalSecret `grafana-oidc-secret` создан и синхронизирован в namespace `kube-prometheus-stack`
+- [ ] Secret `grafana-oidc-secret` создан External Secrets Operator с ключом `client_secret`
+- [ ] Переменная окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` установлена в поде Grafana (через `envValueFrom`)
+- [ ] OIDC аутентификация через Keycloak работает в Grafana (проверено в браузере)
+- [ ] RBAC настроен для использования групп из Keycloak (GrafanaAdmins → Admin, GrafanaEditors → Editor)
 - [ ] Jaeger установлен и сервисы готовы
 - [ ] HTTPRoute для Argo CD созданы и привязаны к Gateway
 - [ ] HTTPRoute для Jenkins созданы и привязаны к Gateway
