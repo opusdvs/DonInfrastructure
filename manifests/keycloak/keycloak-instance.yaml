@@ -12,27 +12,6 @@ spec:
   # Количество реплик Keycloak
   instances: 1
   
-  # Конфигурация базы данных PostgreSQL
-  database:
-    vendor: postgres
-    # Host PostgreSQL (замените на реальный адрес вашего PostgreSQL)
-    # Если PostgreSQL в том же кластере, используйте формат: <service-name>.<namespace>.svc.cluster.local
-    host: postgresql.postgresql.svc.cluster.local
-    # Порт PostgreSQL (по умолчанию 5432)
-    port: 5432
-    # Имя базы данных
-    databaseSecret:
-      name: postgresql-keycloak-credentials
-      key: database
-    # Username из Secret
-    usernameSecret:
-      name: postgresql-keycloak-credentials
-      key: username
-    # Password из Secret
-    passwordSecret:
-      name: postgresql-keycloak-credentials
-      key: password
-  
   # Хостнейм для доступа к Keycloak
   hostname:
     hostname: keycloak.buildbyte.ru
@@ -66,28 +45,62 @@ spec:
   # Настройки для production (опционально)
   # production: false  # По умолчанию false для development режима
   
+  # Конфигурация базы данных PostgreSQL
+  db:
+    vendor: postgres
+    host: postgresql.postgresql.svc.cluster.local
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: postgresql-keycloak-credentials
+      key: username
+    passwordSecret:
+      name: postgresql-keycloak-credentials
+      key: password
+  
+  # Bootstrap администратор Keycloak
+  # Использует секрет keycloak-admin-credentials, созданный External Secrets Operator
+  bootstrapAdmin:
+    user:
+      secret: keycloak-admin-credentials
+  
   # Unsupported настройки (для расширенной конфигурации)
-  # unsupported:
-  #   podTemplate:
-  #     spec:
-  #       containers:
-  #         - name: keycloak
-  #           env:
-  #             - name: KC_HEALTH_ENABLED
-  #               value: "true"
-  #           livenessProbe:
-  #             httpGet:
-  #               path: /health
-  #               port: 8080
-  #             initialDelaySeconds: 300
-  #             periodSeconds: 30
-  #             timeoutSeconds: 10
-  #             failureThreshold: 5
-  #           readinessProbe:
-  #             httpGet:
-  #               path: /health
-  #               port: 8080
-  #             initialDelaySeconds: 300
-  #             periodSeconds: 15
-  #             timeoutSeconds: 10
-  #             failureThreshold: 5
+  unsupported:
+    podTemplate:
+      spec:
+        containers:
+          - name: keycloak
+            env:
+              # Health и metrics
+              - name: KC_HEALTH_ENABLED
+                value: "true"
+              - name: KC_METRICS_ENABLED
+                value: "true"
+              # Отключить кластеризацию для standalone режима (один экземпляр)
+              # Использовать локальный кеш вместо распределенного (JGroups)
+              - name: KC_CACHE
+                value: "local"
+            startupProbe:
+              httpGet:
+                path: /health/started
+                port: 9000
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 30
+            livenessProbe:
+              httpGet:
+                path: /health/live
+                port: 9000
+              initialDelaySeconds: 60
+              periodSeconds: 30
+              timeoutSeconds: 10
+              failureThreshold: 5
+            readinessProbe:
+              httpGet:
+                path: /health/ready
+                port: 9000
+              initialDelaySeconds: 60
+              periodSeconds: 15
+              timeoutSeconds: 10
+              failureThreshold: 5

@@ -153,15 +153,22 @@ controller:
   #     value: "http://192.168.64.1:3128"
 
   # -- Environment variable sources for Jenkins Container
-  containerEnvFrom: []
+  containerEnvFrom:
+    - secretRef:
+        name: jenkins-admin-credentials
 
   # -- Environment variables for Jenkins Container
   containerEnv:
-    - name: KEYCLOAK_CLIENT_SECRET
+    - name: JENKINS_ADMIN_USER
       valueFrom:
         secretKeyRef:
-          name: jenkins-keycloak-secret
-          key: client-secret
+          name: jenkins-admin-credentials
+          key: jenkins-admin-user
+    - name: JENKINS_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: jenkins-admin-credentials
+          key: jenkins-admin-password
   #   - name: http_proxy
   #     value: "http://192.168.64.1:3128"
 
@@ -421,7 +428,6 @@ controller:
     - workflow-aggregator:608.v67378e9d3db_1
     - git:5.8.1
     - configuration-as-code:2031.veb_a_fdda_b_3ffd
-    - keycloak:latest
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
@@ -464,9 +470,36 @@ controller:
   #  - "new groovy.json.JsonSlurperClassic"
 
   # -- Map of groovy init scripts to be executed during Jenkins controller start
-  initScripts: {}
-  #  test: |-
-  #    print 'adding global pipeline libraries, register properties, bootstrap jobs...'
+  initScripts:
+    create-admin-user: |-
+      import jenkins.model.*
+      import hudson.security.*
+      import hudson.util.Secret
+      import com.cloudbees.plugins.credentials.impl.*
+      import com.cloudbees.plugins.credentials.*
+      import com.cloudbees.plugins.credentials.domains.*
+      
+      def instance = Jenkins.getInstance()
+      def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+      instance.setSecurityRealm(hudsonRealm)
+      
+      // Получить credentials из секрета
+      def adminUser = System.getenv('JENKINS_ADMIN_USER') ?: 'admin'
+      def adminPassword = System.getenv('JENKINS_ADMIN_PASSWORD') ?: ''
+      
+      // Создать пользователя, если его еще нет
+      if (adminPassword) {
+        def user = hudsonRealm.createAccount(adminUser, adminPassword)
+        user.save()
+        println "Admin user '${adminUser}' created successfully"
+      }
+      
+      // Настроить authorization
+      def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+      strategy.setAllowAnonymousRead(false)
+      instance.setAuthorizationStrategy(strategy)
+      
+      instance.save()
   # -- Name of the existing ConfigMap that contains init scripts
   initConfigMap:
 
@@ -544,51 +577,13 @@ controller:
 
     # Ignored if securityRealm is defined in controller.JCasC.configScripts
     # -- Jenkins Config as Code Security Realm-section
-    securityRealm: |-
-      keycloak:
-        keycloakJson: |
-          {
-            "realm": "master",
-            "auth-server-url": "https://keycloak.buildbyte.ru/",
-            "ssl-required": "external",
-            "resource": "jenkins",
-            "public-client": false,
-            "credentials": {
-              "secret": "${KEYCLOAK_CLIENT_SECRET}"
-            }
-          }
+    # Security realm настраивается через init script для автоматического создания пользователя из секрета
+    securityRealm:
 
     # Ignored if authorizationStrategy is defined in controller.JCasC.configScripts
     # -- Jenkins Config as Code Authorization Strategy-section
-    authorizationStrategy: |-
-      keycloak:
-        groups:
-          - name: "admin"
-            permissions:
-              - "Overall/Administer"
-              - "Overall/Read"
-              - "Overall/RunScripts"
-              - "Job/Build"
-              - "Job/Cancel"
-              - "Job/Configure"
-              - "Job/Create"
-              - "Job/Delete"
-              - "Job/Discover"
-              - "Job/Move"
-              - "Job/Read"
-              - "Job/Workspace"
-              - "View/Configure"
-              - "View/Create"
-              - "View/Delete"
-              - "View/Read"
-          - name: "developer"
-            permissions:
-              - "Overall/Read"
-              - "Job/Build"
-              - "Job/Cancel"
-              - "Job/Read"
-              - "Job/Workspace"
-              - "View/Read"
+    # Authorization strategy настраивается через init script
+    authorizationStrategy:
 
     # -- Annotations for the JCasC ConfigMap
     configMapAnnotations: {}
