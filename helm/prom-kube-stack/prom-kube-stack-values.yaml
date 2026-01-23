@@ -1318,14 +1318,12 @@ grafana:
 
   # Use an existing secret for the admin user.
   # ⚠️ РЕКОМЕНДУЕТСЯ: Используйте Secret для безопасного хранения пароля
-  # 1. Создайте Secret: kubectl create secret generic grafana-admin -n kube-prometheus-stack --from-literal=admin-user=admin --from-literal=admin-password=ваш-пароль
-  # 2. Раскомментируйте и укажите имя Secret ниже:
+  # Secret создается External Secrets Operator из Vault
   admin:
     ## Name of the secret. Can be templated.
-    # existingSecret: "grafana-admin"
-    existingSecret: ""
-    userKey: admin-user
-    passwordKey: admin-password
+    existingSecret: "grafana-admin"
+    userKey: admin_user
+    passwordKey: admin_password
 
   rbac:
     ## If true, Grafana PSPs will be created
@@ -1387,32 +1385,29 @@ grafana:
     autoMount: true
 
   ## Grafana configuration file (grafana.ini)
-  ## OIDC configuration for Keycloak authentication
   grafana.ini:
+    server:
+      root_url: https://grafana.buildbyte.ru
+    
+    # OIDC configuration for Keycloak
     auth.generic_oauth:
       enabled: true
       name: Keycloak
-      client_id: grafana
       allow_sign_up: true
-      # client_secret будет взят из переменной окружения GF_AUTH_OIDC_CLIENT_SECRET
-      client_secret: ${GF_AUTH_OIDC_CLIENT_SECRET}
-      scopes: openid,profile,email,group
+      scopes: openid,profile,email,groups
+      client_id: grafana
       auth_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/auth
       token_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/token
       api_url: https://keycloak.buildbyte.ru/realms/services/protocol/openid-connect/userinfo
+      # Использовать PKCE для безопасности
+      use_pkce: true
+      # Разрешить автоматическую регистрацию пользователей
       allow_sign_up: true
-      # Настройка маппинга ролей на основе групп из Keycloak
-      # Группа 'GrafanaAdmin' -> роль Admin, группа 'viewer' -> роль Viewer, остальные -> Viewer
-      role_attribute_path: contains(group[*], 'GrafanaAdmin') && 'Admin' || contains(group[*], 'viewer') && 'Viewer' || 'Viewer'
-    server:
-      root_url: https://grafana.buildbyte.ru
-
-  ## Environment variables from secrets (для чтения client_secret из Secret)
-  envValueFrom:
-    GF_AUTH_OIDC_CLIENT_SECRET:
-      secretKeyRef:
-        name: grafana-oidc-secret
-        key: client-secret
+      # Использовать email как username
+      use_email: true
+      # Роли на основе групп из Keycloak
+      # Группа GrafanaAdmins получает роль Admin, GrafanaEditors - Editor, остальные - Viewer
+      role_attribute_path: contains(groups[*], 'GrafanaAdmins') && 'Admin' || contains(groups[*], 'GrafanaEditors') && 'Editor' || 'Viewer'
 
   sidecar:
     dashboards:
@@ -1497,6 +1492,28 @@ grafana:
   #   configMap: certs-configmap
   #   readOnly: true
 
+  # Монтирование секрета для OIDC Client Secret (не используется, так как используется переменная окружения)
+  # Секрет grafana-oidc-secret создается через External Secrets Operator
+  # Client Secret устанавливается через переменную окружения GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET (см. env ниже)
+  extraSecretMounts: []
+  # - name: grafana-oidc-secret
+  #   secretName: grafana-oidc-secret
+  #   defaultMode: 0440
+  #   mountPath: /etc/grafana/secrets/grafana-oidc-secret
+  #   readOnly: true
+
+  # Переменные окружения для Grafana
+  # Grafana автоматически читает переменные окружения с префиксом GF_
+  # Client Secret будет установлен через envFrom из секрета grafana-oidc-secret
+  # Секрет должен содержать ключ GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET (см. ExternalSecret)
+  env: {}
+  envFrom: []
+
+  envValueFrom:
+    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-oidc-secret
+        key: client_secret
   deleteDatasources: []
   # - name: example-datasource
   #   orgId: 1

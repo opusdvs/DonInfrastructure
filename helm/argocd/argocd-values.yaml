@@ -231,48 +231,24 @@ configs:
     #         orgs:
     #         - name: your-github-org
 
-    # OIDC configuration as an alternative to dex (optional).
-    # oidc.config: |
-    #   name: AzureAD
-    #   issuer: https://login.microsoftonline.com/TENANT_ID/v2.0
-    #   clientID: aaaabbbbccccddddeee
-    #   clientSecret: $oidc.azuread.clientSecret
-
-    # Some OIDC providers require a separate clientID for different callback URLs.
-    # For example, if configuring Argo CD with self-hosted Dex, you will need a separate client ID
-    # for the 'localhost' (CLI) client to Dex. This field is optional. If omitted, the CLI will
-    # use the same clientID as the Argo CD server
-    #   cliClientID: vvvvwwwwxxxxyyyyzzzz
-
-    #   rootCA: |
-    #     -----BEGIN CERTIFICATE-----
-    #     ... encoded certificate data here ...
-    #     -----END CERTIFICATE-----
-
-    # Optional list of allowed aud claims. If omitted or empty, defaults to the clientID value above (and the
-    # cliClientID, if that is also specified). If you specify a list and want the clientID to be allowed, you must
-    # explicitly include it in the list.
-    # Token verification will pass if any of the token's audiences matches any of the audiences in this list.
-    #   allowedAudiences:
-    #     - aaaabbbbccccddddeee
-    #     - qqqqwwwweeeerrrrttt
-
-    # Optional set of OIDC claims to request on the ID token.
-    #   requestedIDTokenClaims:
-    #     groups:
-    #       essential: true
-
-    # Optional set of OIDC scopes to request. If omitted, defaults to: ["openid", "profile", "email", "groups"]
-    #   requestedScopes:
-    #     - openid
-    #     - profile
-    #     - email
-
-    # PKCE authentication flow processes authorization flow from browser only - default false
-    # uses the clientID
-    # make sure the Identity Provider (IdP) is public and doesn't need clientSecret
-    # make sure the Identity Provider (IdP) has this redirect URI registered: https://argocd.example.com/pkce/verify
-    #   enablePKCEAuthentication: true
+    # OIDC configuration for Keycloak
+    # Client Secret хранится в секрете argocd-oidc-secret (синхронизируется из Vault через External Secrets Operator)
+    # Секрет добавляется в argocd-secret через configs.secret.extra
+    oidc.config: |
+      name: Keycloak
+      issuer: https://keycloak.buildbyte.ru/realms/services
+      clientID: argocd
+      clientSecret: $oidc.keycloak.clientSecret
+      # Request groups claim for RBAC
+      requestedIDTokenClaims:
+        groups:
+          essential: true
+      # Request OIDC scopes
+      requestedScopes:
+        - openid
+        - profile
+        - email
+        - groups
 
     # Extension Configuration
     ## Ref: https://argo-cd.readthedocs.io/en/latest/developer-guide/extensions/proxy-extensions/
@@ -450,18 +426,12 @@ configs:
 
     # -- File containing user-defined policies and role definitions.
     # @default -- `''` (See [values.yaml])
-    policy.csv: ''
-    # Policy rules are in the form:
-    #  p, subject, resource, action, object, effect
-    # Role definitions and bindings are in the form:
-    #  g, subject, inherited-subject
-    # policy.csv: |
-    #   p, role:org-admin, applications, *, */*, allow
-    #   p, role:org-admin, clusters, get, *, allow
-    #   p, role:org-admin, repositories, *, *, allow
-    #   p, role:org-admin, logs, get, *, allow
-    #   p, role:org-admin, exec, create, */*, allow
-    #   g, your-github-org:your-team, role:org-admin
+    # Настройка RBAC на основе групп из Keycloak
+    # Группа ArgoCDAdmins должна быть создана в Keycloak
+    policy.csv: |
+      # Привязать группу ArgoCDAdmins из Keycloak к встроенной роли admin
+      # Роль admin дает полные права администратора в Argo CD
+      g, "ArgoCDAdmins", role:admin
 
     # -- OIDC scopes to examine during rbac enforcement (in addition to `sub` scope).
     # The scope value can be a string, or a list of strings.
@@ -700,6 +670,8 @@ configs:
     ## Custom secrets. Useful for injecting SSO secrets into environment variables.
     ## Ref: https://argo-cd.readthedocs.io/en/stable/operator-manual/user-management/#sensitive-data-and-sso-client-secrets
     ## Note that all values must be non-empty.
+    ## Client Secret для OIDC синхронизируется через ExternalSecret argocd-secret-oidc
+    ## См. manifests/argocd/argocd-secret-oidc-externalsecret.yaml
     extra:
       {}
       # LDAP_PASSWORD: "mypassword"

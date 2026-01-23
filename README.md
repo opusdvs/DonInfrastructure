@@ -158,6 +158,28 @@ kubectl get pods -A
 kubectl version --short
 ```
 
+**Создание Docker Registry в панели управления облака:**
+
+После создания Kubernetes кластера необходимо создать Docker Registry в панели управления облака (Timeweb Cloud):
+
+1. Войдите в панель управления Timeweb Cloud
+2. Перейдите в раздел **Container Registry** или **Docker Registry**
+3. Создайте новый приватный Docker Registry
+4. Сохраните следующие данные (они понадобятся для настройки Jenkins):
+   - **URL реестра** (домен registry, например: `buildbyte-container-registry.registry.twcstorage.ru`)
+   - **Username** (имя пользователя для доступа, например: `buildbyte-container-registry`)
+   - **API Token** (токен для доступа, создается в панели управления)
+
+**Пример данных для buildbyte-container-registry:**
+- Домен: `buildbyte-container-registry.registry.twcstorage.ru`
+- Username: `buildbyte-container-registry`
+- API Token: (создается в панели управления Container Registry)
+
+**Важно:** 
+- Для Timeweb Container Registry используется **API Token** вместо пароля
+- Эти credentials будут использоваться для настройки Jenkins и доступа к приватным Docker образам из CI/CD пайплайнов
+- API Token должен быть сохранен в Vault в поле `api_token` (см. инструкцию в разделе 10.6)
+
 **Конфигурация Services кластера по умолчанию:**
 - **Регион:** `ru-1` (можно изменить в `terraform/services/variables.tf`)
 - **Проект:** `services` (можно изменить в `terraform/services/variables.tf`)
@@ -495,6 +517,16 @@ vault kv put secret/keycloak/postgresql \
   password='<ВАШ_ПАРОЛЬ_KEYCLOAK>' \
   database=keycloak
 "
+
+# Сохранить credentials администратора Keycloak
+# Замените <ВАШ_ИМЯ_АДМИНИСТРАТОРА> и <ВАШ_ПАРОЛЬ_АДМИНИСТРАТОРА> на реальные значения
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/keycloak/admin \
+  username='<ВАШ_ИМЯ_АДМИНИСТРАТОРА>' \
+  password='<ВАШ_ПАРОЛЬ_АДМИНИСТРАТОРА>'
+"
 ```
 
 **Важно:**
@@ -519,43 +551,6 @@ kubectl describe externalsecret postgresql-admin-credentials -n postgresql
 
 # Проверить созданный Secret
 kubectl get secret postgresql-admin-credentials -n postgresql
-
-# Если возникла ошибка SecretSyncedError, выполните диагностику:
-# 1. Проверить детали ошибки:
-kubectl describe externalsecret postgresql-admin-credentials -n postgresql | grep -A 20 "Status:"
-
-# 2. Проверить, существуют ли секреты в Vault:
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/postgresql/admin
-"
-
-# 3. Если секреты не существуют, сохраните их:
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/postgresql/admin \
-  postgres_password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
-  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>'
-"
-
-# 4. Проверить логи External Secrets Operator:
-kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=100 | grep -i "postgresql\|error\|failed"
-
-# 5. Проверить права доступа External Secrets Operator к Vault:
-# Убедитесь, что роль external-secrets-operator имеет права на чтение secret/postgresql/admin
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault policy read external-secrets-operator
-"
-
-# 6. Принудительно обновить ExternalSecret:
-kubectl delete externalsecret postgresql-admin-credentials -n postgresql
-kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
 ```
 
 #### 6.3. Установка PostgreSQL через Helm Bitnami
@@ -565,18 +560,14 @@ kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecre
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo update
 
-# 2. Создать namespace для PostgreSQL
-kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Установить PostgreSQL
+# 2. Установить PostgreSQL
+# Настройки для использования существующего Secret уже указаны в helm/postgresql/postgresql-values.yaml
 helm upgrade --install postgresql bitnami/postgresql \
   --namespace postgresql \
-  -f helm/postgresql/postgresql-values.yaml \
-  --set auth.existingSecret="postgresql-admin-credentials" \
-  --set auth.secretKeys.adminPasswordKey="postgres_password" \
-  --set auth.secretKeys.replicationPasswordKey="replication_password"
+  --create-namespace \
+  -f helm/postgresql/postgresql-values.yaml
 
-# 4. Проверить установку
+# 3. Проверить установку
 kubectl get pods -n postgresql
 kubectl get statefulset -n postgresql
 kubectl get pvc -n postgresql
@@ -612,51 +603,42 @@ kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
 # Получить имя pod PostgreSQL
 POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
 
-# Получить пароль из Secret
-KEYCLOAK_PASSWORD=$(kubectl get secret postgresql-keycloak-credentials -n keycloak -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)
+# Получить пароль администратора PostgreSQL из Secret
+POSTGRES_PASSWORD=$(kubectl get secret postgresql-admin-credentials -n postgresql -o jsonpath='{.data.postgres_password}' | base64 -d)
 
-# Если Secret еще не создан, используйте пароль из Vault
-# Или создайте ExternalSecret для keycloak/postgresql перед выполнением этой команды
-
-# Создать базу данных и пользователя
-kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres <<EOF
-CREATE DATABASE keycloak;
-CREATE USER keycloak WITH PASSWORD '${KEYCLOAK_PASSWORD}';
-GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
-\c keycloak
-GRANT ALL ON SCHEMA public TO keycloak;
-EOF
-```
-
-**Альтернативный способ:** Если ExternalSecret для Keycloak еще не создан, можно использовать пароль напрямую:
-
-```bash
-# Получить пароль из Vault
+# Получить пароль для Keycloak из Vault
 export VAULT_ADDR="http://127.0.0.1:8200"
 export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-KEYCLOAK_PASSWORD=$(kubectl exec -it vault-0 -n vault -- sh -c "
+KEYCLOAK_PASSWORD=$(kubectl exec vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv get -field=password secret/keycloak/postgresql
 ")
 
 # Создать базу данных и пользователя
-POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres <<EOF
-CREATE DATABASE keycloak;
-CREATE USER keycloak WITH PASSWORD '${KEYCLOAK_PASSWORD}';
-GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
-\c keycloak
-GRANT ALL ON SCHEMA public TO keycloak;
-EOF
+# Используем PGPASSWORD для аутентификации через sh -c для корректной передачи переменной
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'CREATE DATABASE keycloak;'"
+
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c \"CREATE USER keycloak WITH PASSWORD '${KEYCLOAK_PASSWORD}';\""
+
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;'"
+
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -d keycloak -c 'GRANT ALL ON SCHEMA public TO keycloak;'"
 ```
 
 **Проверка создания базы данных:**
 ```bash
-# Подключиться к PostgreSQL и проверить
+# Получить имя pod PostgreSQL
 POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "\l" | grep keycloak
-kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "\du" | grep keycloak
+
+# Получить пароль администратора PostgreSQL из Secret
+POSTGRES_PASSWORD=$(kubectl get secret postgresql-admin-credentials -n postgresql -o jsonpath='{.data.postgres_password}' | base64 -d)
+
+# Проверить создание базы данных
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c '\l'" | grep keycloak
+
+# Проверить создание пользователя
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c '\du'" | grep keycloak
 ```
 
 **Важно:**
@@ -675,42 +657,34 @@ kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "\du" | grep
 kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
 kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
 
-# 2. Установить Keycloak Operator
-kubectl apply -f manifests/keycloak/keycloak-operator-install.yaml
+# 2. Создать namespace для Keycloak Operator (если еще не создан)
+kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
-# 3. Проверить установку оператора
-kubectl get pods -n keycloak-system
-kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak-system --timeout=300s
+# 3. Установить Keycloak Operator из официального манифеста
+kubectl -n keycloak apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/kubernetes.yml
+
+# 4. Проверить установку оператора
+kubectl get pods -n keycloak
+kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak --timeout=300s
 ```
 
 #### 7.2. Подготовка PostgreSQL для Keycloak
 
-Keycloak настроен для использования внешнего PostgreSQL. После установки PostgreSQL (см. раздел 6) необходимо создать базу данных и пользователя для Keycloak.
+Keycloak настроен для использования внешнего PostgreSQL. База данных и пользователь для Keycloak уже созданы в разделе 6.4.
 
-**Шаг 1: Определить адрес PostgreSQL**
-
-Адрес PostgreSQL: `postgresql.postgresql.svc.cluster.local:5432`
+**Адрес PostgreSQL для Keycloak:**
+- Host: `postgresql.postgresql.svc.cluster.local`
+- Port: `5432`
+- Database: `keycloak`
+- Username: `keycloak`
+- Password: из Secret `postgresql-keycloak-credentials` (синхронизируется из Vault по пути `secret/keycloak/postgresql`)
 
 ```bash
 # Проверить доступность PostgreSQL
 kubectl get svc -n postgresql
 ```
 
-**Шаг 2: Создать базу данных и пользователя в PostgreSQL**
-
-```bash
-# Найти pod PostgreSQL
-kubectl get pods -A | grep postgresql
-
-# Выполнить SQL команды напрямую (замените <ВАШ_ПАРОЛЬ> на безопасный пароль!)
-kubectl exec -it <postgresql-pod-name> -n <postgresql-namespace> -- psql -U postgres <<EOF
-CREATE DATABASE keycloak;
-CREATE USER keycloak WITH PASSWORD '<ВАШ_ПАРОЛЬ>';
-GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
-EOF
-```
-
-**Шаг 3: Обновить конфигурацию Keycloak**
+**Шаг 2: Обновить конфигурацию Keycloak**
 
 Откройте `manifests/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
 
@@ -719,59 +693,27 @@ database:
   host: postgresql.postgresql.svc.cluster.local  # Замените на ваш адрес PostgreSQL
 ```
 
-**Шаг 4: Создать секреты через External Secrets Operator**
+**Шаг 3: Создать ExternalSecret для PostgreSQL credentials в namespace keycloak**
 
-**Важно:** Все секреты в кластере должны создаваться через External Secrets Operator, который синхронизирует их из Vault.
-
-**4.1. Настроить ClusterSecretStore для Vault (если еще не настроен)**
-
-Создайте ClusterSecretStore для подключения External Secrets Operator к Vault:
+Секреты PostgreSQL для Keycloak должны быть созданы в namespace `keycloak`, где будет развернут Keycloak:
 
 ```bash
-# Пример манифеста ClusterSecretStore для Vault
-# См. manifests/external-secrets/vault-cluster-secret-store.yaml
-kubectl apply -f manifests/external-secrets/vault-cluster-secret-store.yaml
-```
+# Создать namespace для Keycloak (если еще не создан)
+kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
-**4.2. Сохранить секреты в Vault**
-
-Сохраните credentials PostgreSQL в Vault:
-
-```bash
-# Подключиться к Vault
-export VAULT_ADDR="http://vault.vault.svc.cluster.local:8200"
-export VAULT_TOKEN="<ваш-root-token>"
-
-# Убедиться, что KV v2 секретный движок включен (если еще не включен)
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-
-# Сохранить секреты PostgreSQL для Keycloak
-vault kv put secret/keycloak/postgresql \
-  username=keycloak \
-  password='<ВАШ_ПАРОЛЬ>' \
-  database=keycloak
-```
-
-**4.3. Создать ExternalSecret**
-
-Создайте ExternalSecret для синхронизации секретов из Vault:
-
-```bash
-# Применить ExternalSecret манифест
+# Создать ExternalSecret для синхронизации секретов PostgreSQL из Vault
 kubectl apply -f manifests/keycloak/postgresql-credentials-externalsecret.yaml
-```
 
-**Проверка синхронизации:**
+# Создать ExternalSecret для синхронизации admin credentials из Vault
+kubectl apply -f manifests/keycloak/admin-credentials-externalsecret.yaml
 
-```bash
-# Проверить статус ExternalSecret
+# Проверить синхронизацию секретов
 kubectl get externalsecret -n keycloak
-kubectl describe externalsecret postgresql-keycloak-credentials -n keycloak
-
-# Проверить созданный Secret
 kubectl get secret postgresql-keycloak-credentials -n keycloak
+kubectl get secret keycloak-admin-credentials -n keycloak
 ```
 
+**Примечание:** Секреты PostgreSQL и admin credentials для Keycloak уже сохранены в Vault в разделе 6.1. Здесь мы создаем ExternalSecret в namespace `keycloak` для синхронизации этих секретов.
 
 #### 7.3. Создание Keycloak инстанса
 
@@ -788,29 +730,6 @@ kubectl logs -f keycloak-0 -n keycloak | grep -i postgres
 
 # 4. Дождаться готовности Keycloak (может занять несколько минут)
 kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600s
-```
-
-**Проверка подключения к PostgreSQL:**
-
-В логах Keycloak должны быть сообщения:
-```
-INFO  [org.hibernate.dialect.Dialect] Using dialect: org.hibernate.dialect.PostgreSQLDialect
-INFO  [org.keycloak.connections.jpa.updater.liquibase.Connector] Initializing database schema
-```
-
-**Важно:**
-- Keycloak настроен для использования внешнего PostgreSQL (не H2)
-- Убедитесь, что PostgreSQL доступен по адресу, указанному в `keycloak-instance.yaml`
-- Secret `postgresql-keycloak-credentials` должен быть создан перед созданием Keycloak инстанса
-- Hostname настроен на `keycloak.buildbyte.ru`
-
-**Получение пароля администратора Keycloak:**
-```bash
-# Пароль хранится в Secret, созданном оператором
-kubectl get secret credential-keycloak -n keycloak -o jsonpath='{.data.ADMIN_PASSWORD}' 2>/dev/null | base64 -d && echo
-
-# Или найти Secret с паролем
-kubectl get secrets -n keycloak -o json | jq -r '.items[] | select(.data.ADMIN_PASSWORD != null) | .metadata.name'
 ```
 
 ### 8. Установка cert-manager
@@ -877,7 +796,7 @@ watch kubectl get secret gateway-tls-cert -n default
 - Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/cert-manager/cluster-issuer.yaml`
 - Gateway должен быть создан до ClusterIssuer, так как ClusterIssuer использует Gateway для HTTP-01 challenge
 - После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
-- Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `vault.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
+- Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
 - При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
 
 ### 11. Установка Jenkins и Argo CD
@@ -915,6 +834,15 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛЬ>'
 "
+
+# Сохранить credentials администратора Grafana
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/grafana/admin \
+  admin_user='admin' \
+  admin_password='<ВАШ_ПАРОЛЬ>'
+"
 ```
 
 **Важно для Argo CD:**
@@ -935,11 +863,17 @@ kubectl apply -f manifests/argocd/admin-credentials-externalsecret.yaml
 # Создать ExternalSecret для Jenkins
 kubectl apply -f manifests/jenkins/admin-credentials-externalsecret.yaml
 
+# Создать ExternalSecret для Grafana (будет использоваться при установке Prometheus Kube Stack)
+kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f manifests/grafana/admin-credentials-externalsecret.yaml
+
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n argocd
 kubectl get externalsecret -n jenkins
-kubectl get secret argocd-admin-credentials -n argocd
+kubectl get externalsecret -n kube-prometheus-stack
+kubectl get secret argocd-initial-admin-secret -n argocd
 kubectl get secret jenkins-admin-credentials -n jenkins
+kubectl get secret grafana-admin -n kube-prometheus-stack
 ```
 
 #### 10.3. Установка Argo CD и Jenkins
@@ -955,15 +889,13 @@ helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
   --create-namespace \
   -f helm/argocd/argocd-values.yaml \
-  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-admin-credentials -n argocd -o jsonpath='{.data.password}' | base64 -d)"
+  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
 
-# 3. Установить Jenkins с использованием существующего секрета
+# 3. Установить Jenkins (admin credentials уже настроены в helm/jenkins/jenkins-values.yaml)
 helm upgrade --install jenkins jenkins/jenkins \
   --namespace jenkins \
   --create-namespace \
-  -f helm/jenkins/jenkins-values.yaml \
-  --set controller.admin.existingSecret="jenkins-admin-credentials" \
-  --set controller.admin.createSecret=false
+  -f helm/jenkins/jenkins-values.yaml
 
 # 4. Проверить установку
 kubectl get pods -n argocd
@@ -977,14 +909,452 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-co
 **Получение паролей:**
 ```bash
 # Пароль администратора Argo CD (из Vault через ExternalSecret)
-kubectl get secret argocd-admin-credentials -n argocd -o jsonpath='{.data.password}' | base64 -d | echo
+kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d | echo
 # Примечание: Это bcrypt хеш, для использования нужно знать исходный пароль
 
 # Пароль администратора Jenkins (из Vault через ExternalSecret)
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
+#### 10.4. Настройка OIDC для Argo CD через Keycloak
+
+**Важно:** Перед настройкой OIDC убедитесь, что:
+- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
+- В Keycloak создан клиент `argocd` с правильными redirect URIs
+- Получен Client Secret для клиента `argocd`
+
+**Шаг 1: Создать клиент в Keycloak**
+
+1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
+2. Выберите Realm (например, `master`)
+3. Перейдите в **Clients** → **Create client**
+4. Настройте клиент:
+   - **Client ID:** `argocd`
+   - **Client protocol:** `openid-connect`
+   - **Access Type:** `confidential`
+   - **Valid Redirect URIs:** 
+     - `https://argo.buildbyte.ru/api/dex/callback`
+     - `https://argo.buildbyte.ru/auth/callback`
+   - **Web Origins:** `https://argo.buildbyte.ru`
+5. Сохраните клиент и перейдите на вкладку **Credentials**
+6. Скопируйте **Secret** (Client Secret)
+
+**Шаг 2: Сохранить Client Secret в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Client Secret для Argo CD OIDC
+# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
+# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/argocd/oidc \
+  client_secret='<ВАШ_CLIENT_SECRET>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/argocd/oidc
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+
+ExternalSecret синхронизирует Client Secret из Vault напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`, который используется Argo CD для OIDC аутентификации.
+
+```bash
+# Создать ExternalSecret для синхронизации OIDC client-secret напрямую в argocd-secret
+# Этот ExternalSecret обновляет секрет argocd-secret с ключом oidc.keycloak.clientSecret
+kubectl apply -f manifests/argocd/argocd-secret-oidc-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret argocd-secret-oidc -n argocd
+kubectl describe externalsecret argocd-secret-oidc -n argocd
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret argocd-secret-oidc -n argocd --timeout=60s
+
+# Проверить, что ключ добавлен в argocd-secret
+kubectl get secret argocd-secret -n argocd -o jsonpath='{.data}' | jq 'keys' | grep -i oidc
+
+# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
+kubectl get secret argocd-secret -n argocd -o jsonpath='{.data.oidc\.keycloak\.clientSecret}' | base64 -d && echo
+
+# Если значение содержит строку типа "$argocd-oidc-secret:client_secret", значит синхронизация не прошла
+# Проверьте логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i argocd-secret-oidc
+```
+
+**Важно:**
+- ExternalSecret использует `creationPolicy: Merge`, что позволяет добавлять ключ в существующий секрет `argocd-secret`
+- Ключ `oidc.keycloak.clientSecret` должен содержать реальное значение Client Secret из Keycloak, а не строку с `$`
+- Если синхронизация не прошла, проверьте:
+  - Существует ли секрет в Vault по пути `secret/argocd/oidc` с ключом `client_secret`
+  - Настроен ли ClusterSecretStore для Vault
+  - Работает ли External Secrets Operator
+
+**Шаг 4: Обновить Argo CD с OIDC конфигурацией**
+
+OIDC конфигурация уже настроена в `helm/argocd/argocd-values.yaml`. Обновите Argo CD:
+
+```bash
+# Обновить Argo CD с OIDC конфигурацией
+helm upgrade argocd argo/argo-cd \
+  --namespace argocd \
+  -f helm/argocd/argocd-values.yaml \
+  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
+
+# Проверить, что Argo CD перезапустился
+kubectl get pods -n argocd
+kubectl logs -f deployment/argocd-server -n argocd | grep -i oidc
+```
+
+**Шаг 5: Настроить RBAC в Argo CD**
+
+RBAC уже настроен в `helm/argocd/argocd-values.yaml`. Группа `ArgoCDAdmins` из Keycloak привязана к встроенной роли `role:admin`, которая дает полные права администратора в Argo CD.
+
+Текущая конфигурация:
+```yaml
+configs:
+  rbac:
+    # Настройка RBAC на основе групп из Keycloak
+    # Группа ArgoCDAdmins должна быть создана в Keycloak
+    policy.csv: |
+      # Привязать группу ArgoCDAdmins из Keycloak к встроенной роли admin
+      # Роль admin дает полные права администратора в Argo CD
+      g, "ArgoCDAdmins", role:admin
+```
+
+**Важно:**
+- Группа `ArgoCDAdmins` должна быть создана в Keycloak
+- Пользователи должны быть добавлены в эту группу
+- Встроенная роль `role:admin` предоставляет все административные права в Argo CD
+- Если нужно добавить другие группы или роли, отредактируйте `policy.csv` в `helm/argocd/argocd-values.yaml`
+
+**Проверка OIDC:**
+
+1. Откройте Argo CD: `https://argo.buildbyte.ru`
+2. Должна появиться кнопка **"LOG IN VIA KEYCLOAK"** или **"LOG IN VIA OIDC"**
+3. Выполните вход через Keycloak
+4. Проверьте, что пользователь успешно аутентифицирован
+
+**Важно:**
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/argocd/argocd-values.yaml`
+- Client Secret синхронизируется из Vault через External Secrets Operator напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`
+- ExternalSecret `argocd-secret-oidc` использует `creationPolicy: Merge` для добавления ключа в существующий секрет
+- RBAC настраивается на основе групп из Keycloak через `policy.csv`
+- **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/argocd/OIDC_TROUBLESHOOTING.md`
+
+#### 10.5. Настройка GitHub API Token для Jenkins
+
+**Важно:** Перед настройкой GitHub token убедитесь, что:
+- Jenkins установлен и работает
+- External Secrets Operator установлен и работает
+- ClusterSecretStore для Vault настроен
+
+**Шаг 1: Создать Personal Access Token в GitHub**
+
+1. Перейдите в GitHub: **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+2. Нажмите **"Generate new token (classic)"**
+3. Укажите **Note** (описание токена, например, "Jenkins CI/CD")
+4. Выберите **scopes** (права доступа):
+   - Для публичных репозиториев: `public_repo`
+   - Для приватных репозиториев: `repo` (полный доступ к репозиториям)
+   - Для работы с webhooks: `admin:repo_hook` (опционально)
+5. Нажмите **"Generate token"**
+6. Скопируйте токен (он показывается только один раз!)
+
+**Шаг 2: Сохранить GitHub Token в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить GitHub Personal Access Token
+# Замените <ВАШ_GITHUB_TOKEN> на реальный токен из GitHub
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/github \
+  token='<ВАШ_GITHUB_TOKEN>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/jenkins/github
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации GitHub Token**
+
+```bash
+# Создать ExternalSecret для синхронизации GitHub token
+kubectl apply -f manifests/jenkins/github-token-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret jenkins-github-token -n jenkins
+kubectl describe externalsecret jenkins-github-token -n jenkins
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret jenkins-github-token -n jenkins --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret jenkins-github-token -n jenkins
+
+# Проверить значение токена (должно быть реальное значение, а не строка с $)
+kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
+```
+
+**Шаг 4: Обновить Jenkins с конфигурацией GitHub credentials**
+
+GitHub credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+
+```bash
+# Обновить Jenkins с новой конфигурацией
+helm upgrade jenkins jenkins/jenkins \
+  --namespace jenkins \
+  -f helm/jenkins/jenkins-values.yaml
+
+# Проверить, что Jenkins перезапустился
+kubectl get pods -n jenkins
+kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
+```
+
+**Проверка GitHub credentials в Jenkins:**
+
+1. Откройте Jenkins: `https://jenkins.buildbyte.ru`
+2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
+3. Должен быть создан credential с ID `github-token` типа "Secret text"
+4. Этот credential можно использовать в Pipeline jobs для доступа к GitHub репозиториям
+
+#### 10.6. Настройка Docker Registry для Jenkins
+
+**Важно:** Перед настройкой Docker Registry убедитесь, что:
+- Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
+- Jenkins установлен и работает
+- External Secrets Operator установлен и работает
+- ClusterSecretStore для Vault настроен
+
+**Примечание:** Для Timeweb Container Registry используется **API Token** вместо пароля. В Vault credentials сохраняются с полем `api_token`, которое затем используется как `password` в Jenkins credentials для совместимости с Docker login.
+
+**Шаг 1: Сохранить Docker Registry credentials в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Docker Registry credentials
+# Для Timeweb Container Registry используется api_token вместо password
+# Данные для buildbyte-container-registry:
+#   Домен: buildbyte-container-registry.registry.twcstorage.ru
+#   Username: buildbyte-container-registry
+#   API Token: (сохраняется в поле api_token)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/docker-registry \
+  username='buildbyte-container-registry' \
+  api_token='<ВАШ_API_TOKEN>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/jenkins/docker-registry
+"
+```
+
+**Шаг 2: Создать ExternalSecret для синхронизации Docker Registry credentials**
+
+```bash
+# Создать ExternalSecret для синхронизации Docker Registry credentials
+kubectl apply -f manifests/jenkins/docker-registry-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret jenkins-docker-registry -n jenkins
+kubectl describe externalsecret jenkins-docker-registry -n jenkins
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret jenkins-docker-registry -n jenkins --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret jenkins-docker-registry -n jenkins
+
+# Проверить значения credentials (должны быть реальные значения, а не строки с $)
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.username}' | base64 -d && echo
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.password}' | base64 -d && echo
+```
+
+**Шаг 3: Обновить Jenkins с конфигурацией Docker Registry credentials**
+
+Docker Registry credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+
+```bash
+# Обновить Jenkins с новой конфигурацией
+helm upgrade jenkins jenkins/jenkins \
+  --namespace jenkins \
+  -f helm/jenkins/jenkins-values.yaml
+
+# Проверить, что Jenkins перезапустился
+kubectl get pods -n jenkins
+kubectl logs -f deployment/jenkins -n jenkins | grep -i "docker\|credentials"
+```
+
+**Проверка Docker Registry credentials в Jenkins:**
+
+1. Откройте Jenkins: `https://jenkins.buildbyte.ru`
+2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
+3. Должен быть создан credential с ID `docker-registry` типа "Username with password"
+4. Этот credential можно использовать в Pipeline jobs для доступа к приватному Docker Registry
+
+**Использование Docker Registry credentials в Pipeline:**
+
+```groovy
+pipeline {
+    agent any
+    
+    stages {
+        stage('Build and Push') {
+            steps {
+                script {
+                    // Использование Docker registry credentials
+                    withCredentials([usernamePassword(
+                        credentialsId: 'docker-registry',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        sh '''
+                            docker login -u $DOCKER_USER -p $DOCKER_PASS buildbyte-container-registry.registry.twcstorage.ru
+                            docker build -t buildbyte-container-registry.registry.twcstorage.ru/image:tag .
+                            docker push buildbyte-container-registry.registry.twcstorage.ru/image:tag
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+Или используйте встроенные шаги Docker Pipeline:
+
+```groovy
+pipeline {
+    agent any
+    
+    stages {
+        stage('Build and Push') {
+            steps {
+                script {
+                    docker.withRegistry('https://buildbyte-container-registry.registry.twcstorage.ru', 'docker-registry') {
+                        def image = docker.build('buildbyte-container-registry.registry.twcstorage.ru/image:tag')
+                        image.push()
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**Важно:**
+- GitHub token синхронизируется из Vault через External Secrets Operator в секрет `jenkins-github-token`
+- Секрет монтируется в Jenkins через `additionalExistingSecrets` и используется в JCasC через переменную `${jenkins-github-token-token}`
+- GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
+- Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
+
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
+
+**Важно:** Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
+
+#### 12.1. Создание секрета в Vault и ExternalSecret для Grafana admin credentials
+
+Секрет для Grafana должен быть создан перед установкой Prometheus Kube Stack:
+
+**Шаг 1: Сохранить секреты в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить credentials администратора Grafana
+# Замените <ВАШ_ПАРОЛЬ> на реальный пароль
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/grafana/admin \
+  admin_user='admin' \
+  admin_password='<ВАШ_ПАРОЛЬ>'
+"
+
+# Проверить, что секреты сохранены правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/grafana/admin
+"
+```
+
+**Шаг 2: Создать ExternalSecret для синхронизации секретов**
+
+```bash
+# Создать namespace для Prometheus Kube Stack (если еще не создан)
+kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
+
+# Создать ExternalSecret для синхронизации admin credentials из Vault
+kubectl apply -f manifests/grafana/admin-credentials-externalsecret.yaml
+
+# Проверить синхронизацию секретов
+kubectl get externalsecret -n kube-prometheus-stack
+kubectl describe externalsecret grafana-admin-credentials -n kube-prometheus-stack
+
+# Проверить созданный Secret
+kubectl get secret grafana-admin -n kube-prometheus-stack
+```
+
+**Примечание:** Если секреты для Grafana уже сохранены в Vault в разделе 10.1, можно пропустить Шаг 1 и сразу перейти к Шагу 2.
+
+#### 12.2. Установка Prometheus Kube Stack
 
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
@@ -992,6 +1362,7 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 # 2. Установить Prometheus Kube Stack
+# Admin credentials уже настроены в helm/prom-kube-stack/prom-kube-stack-values.yaml
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --namespace kube-prometheus-stack \
   --create-namespace \
@@ -1009,15 +1380,139 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
+- Secret `grafana-admin` должен быть создан через External Secrets Operator перед установкой
+- Admin credentials настроены в `helm/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
 
 **Получение пароля администратора Grafana:**
 ```bash
-# Пароль по умолчанию хранится в Secret
-kubectl get secret kube-prometheus-stack-grafana -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
+# Имя администратора Grafana (из Vault через ExternalSecret)
+kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-user}' | base64 -d && echo
 
-# Или если используется кастомный Secret
+# Пароль администратора Grafana (из Vault через ExternalSecret)
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
+
+#### 12.3. Настройка OIDC для Grafana через Keycloak
+
+**Важно:** Перед настройкой OIDC убедитесь, что:
+- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
+- В Keycloak создан клиент `grafana` с правильными redirect URIs
+- Получен Client Secret для клиента `grafana`
+
+**Шаг 1: Создать клиент в Keycloak**
+
+1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
+2. Выберите Realm (например, `services`)
+3. Перейдите в **Clients** → **Create client**
+4. Настройте клиент:
+   - **Client ID:** `grafana`
+   - **Client protocol:** `openid-connect`
+   - **Access Type:** `confidential`
+   - **Valid Redirect URIs:** 
+     - `https://grafana.buildbyte.ru/login/generic_oauth`
+   - **Web Origins:** `https://grafana.buildbyte.ru`
+5. Сохраните клиент и перейдите на вкладку **Credentials**
+6. Скопируйте **Secret** (Client Secret)
+
+**Шаг 2: Сохранить Client Secret в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Client Secret для Grafana OIDC
+# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
+# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/grafana/oidc \
+  client_secret='<ВАШ_CLIENT_SECRET>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/grafana/oidc
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+
+ExternalSecret синхронизирует Client Secret из Vault в секрет `grafana-oidc-secret`, который используется Grafana для OIDC аутентификации через переменную окружения.
+
+```bash
+# Создать ExternalSecret для синхронизации OIDC client-secret для Grafana
+kubectl apply -f manifests/grafana/oidc-secret-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret grafana-oidc-secret -n kube-prometheus-stack
+kubectl describe externalsecret grafana-oidc-secret -n kube-prometheus-stack
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret grafana-oidc-secret -n kube-prometheus-stack --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
+
+# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
+
+# Если значение содержит строку типа "$grafana-oidc-secret:client_secret", значит синхронизация не прошла
+# Проверьте логи External Secrets Operator:
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i grafana-oidc-secret
+```
+
+**Важно:**
+- ExternalSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
+- OIDC конфигурация уже настроена в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Если синхронизация не прошла, проверьте:
+  - Существует ли секрет в Vault по пути `secret/grafana/oidc` с ключом `client_secret`
+  - Настроен ли ClusterSecretStore для Vault
+  - Работает ли External Secrets Operator
+
+**Шаг 4: Перезапустить Grafana (если необходимо)**
+
+После создания секрета Grafana автоматически использует его для OIDC. Если OIDC не работает, перезапустите Grafana:
+
+```bash
+# Перезапустить Grafana
+kubectl rollout restart deployment kube-prometheus-stack-grafana -n kube-prometheus-stack
+
+# Проверить логи Grafana для подтверждения OIDC конфигурации
+kubectl logs -f deployment/kube-prometheus-stack-grafana -n kube-prometheus-stack | grep -i oauth
+
+# Проверить, что переменная окружения установлена в поде Grafana
+GRAFANA_POD=$(kubectl get pods -n kube-prometheus-stack -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+```
+
+**Проверка OIDC:**
+
+1. Откройте Grafana: `https://grafana.buildbyte.ru`
+2. Должна появиться кнопка **"LOG IN VIA KEYCLOAK"** или **"LOG IN VIA OIDC"**
+3. Выполните вход через Keycloak
+4. Проверьте, что пользователь успешно аутентифицирован
+
+**Важно:**
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml`)
+- Client Secret синхронизируется из Vault через External Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Grafana автоматически читает переменные окружения с префиксом `GF_` для конфигурации
+- Роли настраиваются на основе групп из Keycloak через `role_attribute_path`:
+  - Группа `GrafanaAdmins` получает роль `Admin`
+  - Группа `GrafanaEditors` получает роль `Editor`
+  - Остальные пользователи получают роль `Viewer`
 
 ### 13. Установка Jaeger
 
@@ -1064,105 +1559,24 @@ kubectl apply -f manifests/gateway/routes/argocd-http-redirect.yaml
 kubectl apply -f manifests/gateway/routes/jenkins-https-route.yaml
 kubectl apply -f manifests/gateway/routes/jenkins-http-redirect.yaml
 
-# 3. Применить HTTPRoute для Vault
-kubectl apply -f manifests/gateway/routes/vault-https-route.yaml
-kubectl apply -f manifests/gateway/routes/vault-http-redirect.yaml
-
-# 4. Применить HTTPRoute для Grafana
+# 3. Применить HTTPRoute для Grafana
 kubectl apply -f manifests/gateway/routes/grafana-https-route.yaml
 kubectl apply -f manifests/gateway/routes/grafana-http-redirect.yaml
 
-# 5. Применить HTTPRoute для Keycloak
+# 4. Применить HTTPRoute для Keycloak
 kubectl apply -f manifests/gateway/routes/keycloak-https-route.yaml
 kubectl apply -f manifests/gateway/routes/keycloak-http-redirect.yaml
 
-# 6. Проверить HTTPRoute
+# 5. Проверить HTTPRoute
 kubectl get httproute -A
 kubectl describe httproute argocd-server -n argocd
 kubectl describe httproute jenkins-server -n jenkins
-kubectl describe httproute vault-server -n vault
 kubectl describe httproute grafana-server -n kube-prometheus-stack
 kubectl describe httproute keycloak-server -n keycloak
 
-# 7. Проверить, что HTTPRoute привязаны к Gateway
+# 6. Проверить, что HTTPRoute привязаны к Gateway
 kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 ```
-
-### 15. Настройка SSO (Single Sign-On) с Keycloak
-
-После установки всех компонентов можно настроить единый вход (SSO) для всех приложений через Keycloak.
-
-#### 15.1. Предварительные требования
-
-- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
-- Получен пароль администратора Keycloak (см. раздел 6)
-- Все приложения установлены и доступны через HTTPS
-
-#### 15.2. Настройка клиентов в Keycloak
-
-1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
-2. Создайте Realm (если еще не создан) или используйте существующий (например, `services`)
-3. Для каждого приложения создайте отдельного клиента:
-   - **Argo CD** — клиент `argocd`
-   - **Jenkins** — клиент `jenkins`
-   - **Grafana** — клиент `grafana`
-   - **Vault** — клиент `vault`
-
-#### 15.3. Настройка приложений
-
-**Argo CD:**
-- Настройка OIDC в `helm/argocd/argocd-values.yaml`
-- Создание Secret с Client Secret
-
-**Grafana:**
-- Настройка Generic OAuth в `grafana.ini` (уже настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml`)
-- Создание Secret: `kubectl apply -f manifests/grafana/grafana-oidc-secret.yaml`
-- Обновление Helm chart: `helm upgrade kube-prometheus-stack ...`
-
-**Vault:**
-- Использование скрипта настройки: `helm/vault/setup-oidc-keycloak.sh`
-- Создание политики для группы `VaultCDAdmins`
-
-**Jenkins:**
-- Настройка через JCasC или UI Jenkins
-- Использование плагина Keycloak Authentication Plugin
-
-#### 15.4. Создание групп и пользователей
-
-1. В Keycloak создайте группы:
-   - `GrafanaAdmin` — администраторы Grafana
-   - `VaultCDAdmins` — администраторы Vault
-   - `viewer` — пользователи с правами просмотра
-   - Другие группы по необходимости
-
-2. Назначьте пользователей в соответствующие группы
-
-#### 15.5. Применение изменений
-
-```bash
-# Обновить Grafana (если изменили конфигурацию)
-helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --namespace kube-prometheus-stack \
-  -f helm/prom-kube-stack/prom-kube-stack-values.yaml
-
-# Настроить Vault (выполнить скрипт)
-cd helm/vault
-./setup-oidc-keycloak.sh
-
-# Обновить Argo CD (если изменили конфигурацию)
-helm upgrade argocd argo/argo-cd \
-  --namespace argocd \
-  -f helm/argocd/argocd-values.yaml
-```
-
-#### 15.6. Проверка SSO
-
-1. Откройте приложения в браузере:
-   - `https://grafana.buildbyte.ru` — должна появиться кнопка "Sign in with Keycloak"
-   - `https://vault.buildbyte.ru` — должен быть доступен метод аутентификации OIDC
-   - `https://argo.buildbyte.ru` — должен быть доступен вход через Keycloak
-
-2. Выполните вход через Keycloak и проверьте права доступа
 
 ## Полный чек-лист установки
 
@@ -1187,28 +1601,46 @@ helm upgrade argocd argo/argo-cd \
 - [ ] PostgreSQL установлен через Helm Bitnami и доступен
 - [ ] База данных и пользователь для Keycloak созданы в PostgreSQL
 - [ ] Секреты PostgreSQL для Keycloak сохранены в Vault (путь: `secret/keycloak/postgresql`)
-- [ ] ExternalSecret `postgresql-keycloak-credentials` создан и синхронизирован
+- [ ] Admin credentials для Keycloak сохранены в Vault (путь: `secret/keycloak/admin`)
+- [ ] ExternalSecret `postgresql-keycloak-credentials` создан и синхронизирован в namespace `keycloak`
+- [ ] ExternalSecret `keycloak-admin-credentials` создан и синхронизирован в namespace `keycloak`
 - [ ] Secret `postgresql-keycloak-credentials` создан External Secrets Operator
+- [ ] Secret `keycloak-admin-credentials` создан External Secrets Operator
 - [ ] Адрес PostgreSQL обновлен в `keycloak-instance.yaml`
 - [ ] Keycloak Operator установлен и Keycloak инстанс готов
 - [ ] Keycloak успешно подключен к PostgreSQL (проверено в логах)
 - [ ] Argo CD установлен и сервисы готовы
+- [ ] Клиент `argocd` создан в Keycloak с правильными redirect URIs
+- [ ] Client Secret для Argo CD сохранен в Vault (путь: `secret/argocd/oidc` с ключом `client_secret`)
+- [ ] ExternalSecret `argocd-secret-oidc` создан и синхронизирован в namespace `argocd`
+- [ ] Ключ `oidc.keycloak.clientSecret` добавлен в секрет `argocd-secret` с реальным значением (не строка с `$`)
+- [ ] Argo CD обновлен с OIDC конфигурацией
+- [ ] OIDC аутентификация через Keycloak работает (проверено в браузере)
+- [ ] RBAC настроен для использования групп из Keycloak (опционально)
 - [ ] Jenkins установлен и сервисы готовы
+- [ ] GitHub Personal Access Token создан в GitHub
+- [ ] GitHub token сохранен в Vault (путь: `secret/jenkins/github` с ключом `token`)
+- [ ] ExternalSecret `jenkins-github-token` создан и синхронизирован в namespace `jenkins`
+- [ ] Secret `jenkins-github-token` создан External Secrets Operator с ключом `token`
+- [ ] Jenkins обновлен с конфигурацией GitHub credentials через JCasC
+- [ ] GitHub credentials доступны в Jenkins (ID: `github-token`)
+- [ ] Admin credentials для Grafana сохранены в Vault (путь: `secret/grafana/admin`)
+- [ ] ExternalSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
+- [ ] Secret `grafana-admin` создан External Secrets Operator
 - [ ] Prometheus Kube Stack установлен и сервисы готовы
+- [ ] Клиент `grafana` создан в Keycloak с правильными redirect URIs
+- [ ] Client Secret для Grafana сохранен в Vault (путь: `secret/grafana/oidc` с ключом `client_secret`)
+- [ ] ExternalSecret `grafana-oidc-secret` создан и синхронизирован в namespace `kube-prometheus-stack`
+- [ ] Secret `grafana-oidc-secret` создан External Secrets Operator с ключом `client_secret`
+- [ ] Переменная окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` установлена в поде Grafana (через `envValueFrom`)
+- [ ] OIDC аутентификация через Keycloak работает в Grafana (проверено в браузере)
+- [ ] RBAC настроен для использования групп из Keycloak (GrafanaAdmins → Admin, GrafanaEditors → Editor)
 - [ ] Jaeger установлен и сервисы готовы
 - [ ] HTTPRoute для Argo CD созданы и привязаны к Gateway
 - [ ] HTTPRoute для Jenkins созданы и привязаны к Gateway
-- [ ] HTTPRoute для Vault созданы и привязаны к Gateway
 - [ ] HTTPRoute для Grafana созданы и привязаны к Gateway
 - [ ] HTTPRoute для Keycloak созданы и привязаны к Gateway
 - [ ] Keycloak настроен и доступен через HTTPS
-- [ ] Клиенты созданы в Keycloak для всех приложений (argocd, jenkins, grafana, vault)
-- [ ] Secret для Grafana OIDC создан (`grafana-oidc-secret`)
-- [ ] Grafana настроена для работы с Keycloak через Generic OAuth
-- [ ] Vault настроен для работы с Keycloak через OIDC (скрипт `setup-oidc-keycloak.sh` выполнен)
-- [ ] Группы созданы в Keycloak (GrafanaAdmin, VaultCDAdmins, viewer)
-- [ ] Пользователи назначены в соответствующие группы
-- [ ] SSO протестирован для всех приложений
 
 ### Dev кластер (для микросервисов)
 
@@ -1231,22 +1663,14 @@ kubectl get clusterissuer
 # Проверить доступность через браузер
 # Argo CD: https://argo.buildbyte.ru
 # Jenkins: https://jenkins.buildbyte.ru
-# Vault: https://vault.buildbyte.ru
 # Grafana: https://grafana.buildbyte.ru
 # Keycloak: https://keycloak.buildbyte.ru
 
 # Проверить редиректы HTTP -> HTTPS
 curl -I http://argo.buildbyte.ru  # Должен вернуть 301 на https://
 curl -I http://jenkins.buildbyte.ru  # Должен вернуть 301 на https://
-curl -I http://vault.buildbyte.ru  # Должен вернуть 301 на https://
 curl -I http://grafana.buildbyte.ru  # Должен вернуть 301 на https://
 curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на https://
-
-# Проверить SSO (если настроен)
-# Откройте приложения в браузере и проверьте наличие кнопок входа через Keycloak:
-# - Grafana: https://grafana.buildbyte.ru (должна быть кнопка "Sign in with Keycloak")
-# - Vault: https://vault.buildbyte.ru (должен быть метод аутентификации OIDC)
-# - Argo CD: https://argo.buildbyte.ru (должен быть вход через Keycloak)
 ```
 
 ## Дополнительная документация
@@ -1325,6 +1749,72 @@ HTTPRoute (ссылаются на Gateway и сервисы приложени�
 **Важно:**
 - **Vault** должен быть установлен до External Secrets Operator
 - **External Secrets Operator** должен быть установлен до приложений, которые используют секреты
-- **Keycloak** должен быть установлен ПЕРЕД Argo CD, Jenkins и Grafana, так как эти приложения используют Keycloak для SSO
 - Все секреты создаются через External Secrets Operator, который синхронизирует их из Vault
 - Секреты для Keycloak, Grafana и других приложений должны быть сохранены в Vault перед установкой приложений
+
+## Планы на будущее
+
+1. **Написать модули для Terraform**
+   - Создать переиспользуемые Terraform модули для стандартизации развертывания компонентов
+   - Упростить конфигурацию и уменьшить дублирование кода
+   - Обеспечить единообразие развертывания в разных окружениях
+
+2. **Сделать кластеризацию PostgreSQL, Keycloak, Vault**
+   - Настроить PostgreSQL в режиме высокой доступности (HA) с репликацией
+   - Настроить Keycloak в кластерном режиме с несколькими инстансами
+   - Настроить Vault в HA режиме с Raft storage backend и несколькими репликами
+   - Обеспечить отказоустойчивость критических компонентов инфраструктуры
+
+3. **Ввести разграничение по ролям Keycloak**
+   - Настроить детальное разграничение доступа на основе ролей и групп в Keycloak
+   - Реализовать RBAC для различных компонентов (Argo CD, Jenkins, Grafana)
+   - Настроить политики доступа для разных команд и окружений
+
+4. **Занести создание кластера в pipeline**
+   - Автоматизировать развертывание Kubernetes кластеров через CI/CD pipeline
+   - Интегрировать Terraform в процесс сборки и развертывания
+   - Обеспечить автоматическое тестирование и валидацию конфигурации
+
+5. **Настроить централизованное логирование**
+   - Развернуть систему централизованного сбора логов (Loki, ELK Stack или аналоги)
+   - Настроить сбор логов со всех компонентов инфраструктуры
+   - Интегрировать логирование с Grafana для визуализации и анализа
+   - Настроить ротацию и хранение логов
+
+6. **Реализовать стратегию бэкапов**
+   - Настроить автоматические бэкапы для PostgreSQL (базы данных Keycloak и других сервисов)
+   - Настроить бэкапы для Vault (unseal keys, policies, secrets)
+   - Настроить бэкапы для конфигураций Kubernetes (etcd, манифесты)
+   - Реализовать процедуры восстановления из бэкапов
+   - Настроить тестирование восстановления
+
+7. **Настроить алертинг и мониторинг**
+   - Настроить AlertManager для Prometheus
+   - Создать правила алертинга для критических компонентов (Vault, PostgreSQL, Keycloak)
+   - Настроить интеграцию с системами уведомлений (Slack, Email, PagerDuty)
+   - Настроить мониторинг доступности сервисов и SLA
+
+8. **Внедрить GitOps для всей инфраструктуры**
+   - Настроить Argo CD для управления всей инфраструктурой через Git
+   - Автоматизировать развертывание изменений через Git-коммиты
+   - Настроить автоматическую синхронизацию конфигураций
+   - Реализовать процесс code review для изменений инфраструктуры
+
+9. **Усилить безопасность**
+   - Внедрить Pod Security Standards для всех namespace
+   - Настроить Network Policies для изоляции трафика между компонентами
+   - Настроить OPA Gatekeeper или Kyverno для политик безопасности
+   - Реализовать сканирование образов контейнеров на уязвимости
+   - Настроить регулярное обновление компонентов и патчей безопасности
+
+10. **Оптимизировать использование ресурсов**
+    - Настроить Horizontal Pod Autoscaler (HPA) для автоматического масштабирования
+    - Настроить Vertical Pod Autoscaler (VPA) для оптимизации запросов ресурсов
+    - Провести аудит использования ресурсов и оптимизацию
+    - Настроить лимиты и квоты для namespace
+
+11. **Настроить Jenkins через JCasC (Jenkins Configuration as Code)**
+    - Перенести все настройки Jenkins из init scripts в JCasC конфигурацию
+    - Настроить security realm, authorization strategy и другие компоненты через JCasC
+    - Обеспечить полное управление конфигурацией Jenkins через код
+    - Упростить процесс обновления и версионирования конфигурации Jenkins
