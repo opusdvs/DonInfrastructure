@@ -158,6 +158,28 @@ kubectl get pods -A
 kubectl version --short
 ```
 
+**Создание Docker Registry в панели управления облака:**
+
+После создания Kubernetes кластера необходимо создать Docker Registry в панели управления облака (Timeweb Cloud):
+
+1. Войдите в панель управления Timeweb Cloud
+2. Перейдите в раздел **Container Registry** или **Docker Registry**
+3. Создайте новый приватный Docker Registry
+4. Сохраните следующие данные (они понадобятся для настройки Jenkins):
+   - **URL реестра** (домен registry, например: `buildbyte-container-registry.registry.twcstorage.ru`)
+   - **Username** (имя пользователя для доступа, например: `buildbyte-container-registry`)
+   - **API Token** (токен для доступа, создается в панели управления)
+
+**Пример данных для buildbyte-container-registry:**
+- Домен: `buildbyte-container-registry.registry.twcstorage.ru`
+- Username: `buildbyte-container-registry`
+- API Token: (создается в панели управления Container Registry)
+
+**Важно:** 
+- Для Timeweb Container Registry используется **API Token** вместо пароля
+- Эти credentials будут использоваться для настройки Jenkins и доступа к приватным Docker образам из CI/CD пайплайнов
+- API Token должен быть сохранен в Vault в поле `api_token` (см. инструкцию в разделе 10.6)
+
 **Конфигурация Services кластера по умолчанию:**
 - **Регион:** `ru-1` (можно изменить в `terraform/services/variables.tf`)
 - **Проект:** `services` (можно изменить в `terraform/services/variables.tf`)
@@ -1127,6 +1149,145 @@ kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
 2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
 3. Должен быть создан credential с ID `github-token` типа "Secret text"
 4. Этот credential можно использовать в Pipeline jobs для доступа к GitHub репозиториям
+
+#### 10.6. Настройка Docker Registry для Jenkins
+
+**Важно:** Перед настройкой Docker Registry убедитесь, что:
+- Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
+- Jenkins установлен и работает
+- External Secrets Operator установлен и работает
+- ClusterSecretStore для Vault настроен
+
+**Примечание:** Для Timeweb Container Registry используется **API Token** вместо пароля. В Vault credentials сохраняются с полем `api_token`, которое затем используется как `password` в Jenkins credentials для совместимости с Docker login.
+
+**Шаг 1: Сохранить Docker Registry credentials в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить Docker Registry credentials
+# Для Timeweb Container Registry используется api_token вместо password
+# Данные для buildbyte-container-registry:
+#   Домен: buildbyte-container-registry.registry.twcstorage.ru
+#   Username: buildbyte-container-registry
+#   API Token: (сохраняется в поле api_token)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/docker-registry \
+  username='buildbyte-container-registry' \
+  api_token='<ВАШ_API_TOKEN>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/jenkins/docker-registry
+"
+```
+
+**Шаг 2: Создать ExternalSecret для синхронизации Docker Registry credentials**
+
+```bash
+# Создать ExternalSecret для синхронизации Docker Registry credentials
+kubectl apply -f manifests/jenkins/docker-registry-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret jenkins-docker-registry -n jenkins
+kubectl describe externalsecret jenkins-docker-registry -n jenkins
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret jenkins-docker-registry -n jenkins --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret jenkins-docker-registry -n jenkins
+
+# Проверить значения credentials (должны быть реальные значения, а не строки с $)
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.username}' | base64 -d && echo
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.password}' | base64 -d && echo
+```
+
+**Шаг 3: Обновить Jenkins с конфигурацией Docker Registry credentials**
+
+Docker Registry credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+
+```bash
+# Обновить Jenkins с новой конфигурацией
+helm upgrade jenkins jenkins/jenkins \
+  --namespace jenkins \
+  -f helm/jenkins/jenkins-values.yaml
+
+# Проверить, что Jenkins перезапустился
+kubectl get pods -n jenkins
+kubectl logs -f deployment/jenkins -n jenkins | grep -i "docker\|credentials"
+```
+
+**Проверка Docker Registry credentials в Jenkins:**
+
+1. Откройте Jenkins: `https://jenkins.buildbyte.ru`
+2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
+3. Должен быть создан credential с ID `docker-registry` типа "Username with password"
+4. Этот credential можно использовать в Pipeline jobs для доступа к приватному Docker Registry
+
+**Использование Docker Registry credentials в Pipeline:**
+
+```groovy
+pipeline {
+    agent any
+    
+    stages {
+        stage('Build and Push') {
+            steps {
+                script {
+                    // Использование Docker registry credentials
+                    withCredentials([usernamePassword(
+                        credentialsId: 'docker-registry',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        sh '''
+                            docker login -u $DOCKER_USER -p $DOCKER_PASS buildbyte-container-registry.registry.twcstorage.ru
+                            docker build -t buildbyte-container-registry.registry.twcstorage.ru/image:tag .
+                            docker push buildbyte-container-registry.registry.twcstorage.ru/image:tag
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+Или используйте встроенные шаги Docker Pipeline:
+
+```groovy
+pipeline {
+    agent any
+    
+    stages {
+        stage('Build and Push') {
+            steps {
+                script {
+                    docker.withRegistry('https://buildbyte-container-registry.registry.twcstorage.ru', 'docker-registry') {
+                        def image = docker.build('buildbyte-container-registry.registry.twcstorage.ru/image:tag')
+                        image.push()
+                    }
+                }
+            }
+        }
+    }
+}
+```
 
 **Важно:**
 - GitHub token синхронизируется из Vault через External Secrets Operator в секрет `jenkins-github-token`

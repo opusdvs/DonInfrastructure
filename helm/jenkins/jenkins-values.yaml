@@ -42,7 +42,7 @@ controller:
     repository: "jenkins/jenkins"
 
     # -- Controller image tag override; i.e., tag: "2.440.1-jdk21"
-    tag:
+    tag: 2.547
 
     # -- Controller image tag label
     tagLabel: jdk21
@@ -430,6 +430,8 @@ controller:
     - configuration-as-code:2031.veb_a_fdda_b_3ffd
     - github:1.45.0
     - keycloak:2.3.2
+    - pipeline-github:2.8-162.382498405fdc
+    - github-branch-source:1925.v62fb_7ffb_08ce
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
@@ -520,6 +522,11 @@ controller:
     # GitHub API token для доступа к репозиториям
     - name: jenkins-github-token
       keyName: token
+    # Docker Registry credentials для доступа к приватному репозиторию
+    - name: jenkins-docker-registry
+      keyName: username
+    - name: jenkins-docker-registry
+      keyName: password
   # ref: https://github.com/jenkinsci/configuration-as-code-plugin/blob/master/docs/features/secrets.adoc#kubernetes-secrets
 
   # -- List of additional secrets to create and mount
@@ -574,6 +581,18 @@ controller:
                       scope: GLOBAL
                       description: "GitHub Personal Access Token для доступа к репозиториям"
                       secret: "${jenkins-github-token-token}"
+      # Docker Registry credentials для доступа к приватному репозиторию
+      docker-registry-credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      id: "docker-registry"
+                      scope: GLOBAL
+                      description: "Docker Registry credentials для доступа к приватному репозиторию"
+                      username: "${jenkins-docker-registry-username}"
+                      password: "${jenkins-docker-registry-password}"
     #  welcome-message: |
     #    jenkins:
     #      systemMessage: Welcome to our CI\CD server. This Jenkins is configured and managed 'as code'.
