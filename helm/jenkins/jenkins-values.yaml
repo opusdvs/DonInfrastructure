@@ -428,6 +428,8 @@ controller:
     - workflow-aggregator:608.v67378e9d3db_1
     - git:5.8.1
     - configuration-as-code:2031.veb_a_fdda_b_3ffd
+    - github:1.45.0
+    - keycloak:2.3.2
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
@@ -514,13 +516,11 @@ controller:
   existingSecret:
 
   # -- List of additional existing secrets to mount
-  additionalExistingSecrets: []
+  additionalExistingSecrets:
+    # GitHub API token для доступа к репозиториям
+    - name: jenkins-github-token
+      keyName: token
   # ref: https://github.com/jenkinsci/configuration-as-code-plugin/blob/master/docs/features/secrets.adoc#kubernetes-secrets
-  # additionalExistingSecrets:
-  #  - name: secret-name-1
-  #    keyName: username
-  #  - name: secret-name-1
-  #    keyName: password
 
   # -- List of additional secrets to create and mount
   additionalSecrets: []
@@ -562,7 +562,18 @@ controller:
     configUrls: []
     # - https://acme.org/jenkins.yaml
     # -- List of Jenkins Config as Code scripts
-    configScripts: {}
+    configScripts:
+      # GitHub credentials для доступа к репозиториям
+      github-credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - string:
+                      id: "github-token"
+                      scope: GLOBAL
+                      description: "GitHub Personal Access Token для доступа к репозиториям"
+                      secret: "${jenkins-github-token-token}"
     #  welcome-message: |
     #    jenkins:
     #      systemMessage: Welcome to our CI\CD server. This Jenkins is configured and managed 'as code'.

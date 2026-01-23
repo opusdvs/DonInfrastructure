@@ -1036,6 +1036,104 @@ configs:
 - RBAC настраивается на основе групп из Keycloak через `policy.csv`
 - **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/argocd/OIDC_TROUBLESHOOTING.md`
 
+#### 10.5. Настройка GitHub API Token для Jenkins
+
+**Важно:** Перед настройкой GitHub token убедитесь, что:
+- Jenkins установлен и работает
+- External Secrets Operator установлен и работает
+- ClusterSecretStore для Vault настроен
+
+**Шаг 1: Создать Personal Access Token в GitHub**
+
+1. Перейдите в GitHub: **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+2. Нажмите **"Generate new token (classic)"**
+3. Укажите **Note** (описание токена, например, "Jenkins CI/CD")
+4. Выберите **scopes** (права доступа):
+   - Для публичных репозиториев: `public_repo`
+   - Для приватных репозиториев: `repo` (полный доступ к репозиториям)
+   - Для работы с webhooks: `admin:repo_hook` (опционально)
+5. Нажмите **"Generate token"**
+6. Скопируйте токен (он показывается только один раз!)
+
+**Шаг 2: Сохранить GitHub Token в Vault**
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить GitHub Personal Access Token
+# Замените <ВАШ_GITHUB_TOKEN> на реальный токен из GitHub
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/github \
+  token='<ВАШ_GITHUB_TOKEN>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/jenkins/github
+"
+```
+
+**Шаг 3: Создать ExternalSecret для синхронизации GitHub Token**
+
+```bash
+# Создать ExternalSecret для синхронизации GitHub token
+kubectl apply -f manifests/jenkins/github-token-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret jenkins-github-token -n jenkins
+kubectl describe externalsecret jenkins-github-token -n jenkins
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret jenkins-github-token -n jenkins --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret jenkins-github-token -n jenkins
+
+# Проверить значение токена (должно быть реальное значение, а не строка с $)
+kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
+```
+
+**Шаг 4: Обновить Jenkins с конфигурацией GitHub credentials**
+
+GitHub credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+
+```bash
+# Обновить Jenkins с новой конфигурацией
+helm upgrade jenkins jenkins/jenkins \
+  --namespace jenkins \
+  -f helm/jenkins/jenkins-values.yaml
+
+# Проверить, что Jenkins перезапустился
+kubectl get pods -n jenkins
+kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
+```
+
+**Проверка GitHub credentials в Jenkins:**
+
+1. Откройте Jenkins: `https://jenkins.buildbyte.ru`
+2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
+3. Должен быть создан credential с ID `github-token` типа "Secret text"
+4. Этот credential можно использовать в Pipeline jobs для доступа к GitHub репозиториям
+
+**Важно:**
+- GitHub token синхронизируется из Vault через External Secrets Operator в секрет `jenkins-github-token`
+- Секрет монтируется в Jenkins через `additionalExistingSecrets` и используется в JCasC через переменную `${jenkins-github-token-token}`
+- GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
+- Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
+
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
@@ -1359,6 +1457,12 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 - [ ] OIDC аутентификация через Keycloak работает (проверено в браузере)
 - [ ] RBAC настроен для использования групп из Keycloak (опционально)
 - [ ] Jenkins установлен и сервисы готовы
+- [ ] GitHub Personal Access Token создан в GitHub
+- [ ] GitHub token сохранен в Vault (путь: `secret/jenkins/github` с ключом `token`)
+- [ ] ExternalSecret `jenkins-github-token` создан и синхронизирован в namespace `jenkins`
+- [ ] Secret `jenkins-github-token` создан External Secrets Operator с ключом `token`
+- [ ] Jenkins обновлен с конфигурацией GitHub credentials через JCasC
+- [ ] GitHub credentials доступны в Jenkins (ID: `github-token`)
 - [ ] Admin credentials для Grafana сохранены в Vault (путь: `secret/grafana/admin`)
 - [ ] ExternalSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
 - [ ] Secret `grafana-admin` создан External Secrets Operator
@@ -1547,3 +1651,9 @@ HTTPRoute (ссылаются на Gateway и сервисы приложени�
     - Настроить Vertical Pod Autoscaler (VPA) для оптимизации запросов ресурсов
     - Провести аудит использования ресурсов и оптимизацию
     - Настроить лимиты и квоты для namespace
+
+11. **Настроить Jenkins через JCasC (Jenkins Configuration as Code)**
+    - Перенести все настройки Jenkins из init scripts в JCasC конфигурацию
+    - Настроить security realm, authorization strategy и другие компоненты через JCasC
+    - Обеспечить полное управление конфигурацией Jenkins через код
+    - Упростить процесс обновления и версионирования конфигурации Jenkins
