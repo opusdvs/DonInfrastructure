@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-fluent-bit
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    # Helm chart source
+    - repoURL: https://fluent.github.io/helm-charts
+      chart: fluent-bit
+      targetRevision: 0.55.0
+      helm:
+        releaseName: fluent-bit
+        valueFiles:
+          - $values/helm/dev/fluent-bit/fluent-bit-values.yaml
+
+    # Values source (this repository)
+    - repoURL: https://github.com/opusdvs/DonInfrastructure.git
+      targetRevision: main
+      ref: values
+
+  destination:
+    name: dev-cluster
+    namespace: logging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
