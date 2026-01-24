@@ -9,6 +9,15 @@
 - **Services кластер** (`terraform/services/`) — сервисный кластер для инфраструктурных компонентов (Argo CD, Jenkins, Vault, Grafana, Keycloak и т.д.)
 - **Dev кластер** (`terraform/dev/`) — кластер для разработки и развертывания микросервисов
 
+### Организация конфигураций
+
+Конфигурации разделены по кластерам:
+
+- **`helm/services/`** — Helm values для компонентов Services кластера
+- **`helm/dev/`** — Helm values для компонентов Dev кластера
+- **`manifests/services/`** — Kubernetes манифесты для Services кластера
+- **`manifests/dev/`** — Kubernetes манифесты для Dev кластера
+
 ## Порядок установки Kubernetes кластера
 
 Пошаговая инструкция по развертыванию полного стека инфраструктуры.
@@ -245,7 +254,7 @@ helm repo update
 # 2. Установить CSI драйвер
 helm upgrade --install csi-driver-timeweb-cloud <chart-name> \
   --namespace kube-system \
-  -f helm/csi-tw/csi-tw-values.yaml
+  -f helm/services/csi-tw/csi-tw-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n kube-system | grep csi-driver-timeweb-cloud
@@ -253,7 +262,7 @@ kubectl get storageclass | grep network-drives
 ```
 
 **Важно:** 
-- Перед установкой заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в файле `helm/csi-tw/csi-tw-values.yaml`
+- Перед установкой заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в файле `helm/services/csi-tw/csi-tw-values.yaml`
 - Убедитесь, что API ключ имеет права на управление сетевыми дисками
 
 **Примечание:** Установка через панель Timeweb Cloud может отличаться. Следуйте инструкциям в документации Timeweb Cloud для установки CSI драйвера через веб-интерфейс.
@@ -271,7 +280,7 @@ helm repo update
 helm upgrade --install vault hashicorp/vault \
   --namespace vault \
   --create-namespace \
-  -f helm/vault/vault-values.yaml
+  -f helm/services/vault/vault-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n vault
@@ -283,7 +292,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault 
 
 **Важно:**
 - **ВНИМАНИЕ: Текущая конфигурация - это временный тестовый режим (standalone) для разработки!**
-- Vault использует file storage backend в standalone режиме (настроен в `helm/vault/vault-values.yaml`)
+- Vault использует file storage backend в standalone режиме (настроен в `helm/services/vault/vault-values.yaml`)
 - В продакшене будет настроен полноценный HA кластер с Raft storage и 3 репликами
 - StorageClass должен быть `nvme.network-drives.csi.timeweb.cloud`
 - Vault Agent Injector включен для инъекции секретов в поды
@@ -319,7 +328,7 @@ helm repo update
 helm upgrade --install external-secrets external-secrets/external-secrets \
   --namespace external-secrets-system \
   --create-namespace \
-  -f helm/external-secrets/external-secrets-values.yaml
+  -f helm/services/external-secrets/external-secrets-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n external-secrets-system
@@ -335,13 +344,13 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secret
 - Все секреты в кластере должны создаваться через External Secrets Operator, а не напрямую через `kubectl create secret`
 
 **Подробная документация:**
-- См. конфигурацию в `helm/external-secrets/external-secrets-values.yaml`
+- См. конфигурацию в `helm/services/external-secrets/external-secrets-values.yaml`
 
 #### 5.1. Настройка Kubernetes Auth в Vault для External Secrets Operator
 
 Перед настройкой ClusterSecretStore необходимо настроить Kubernetes auth в Vault для External Secrets Operator.
 
-**Подробная инструкция:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+**Подробная инструкция:** [`manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
 
 **Краткая инструкция:**
 
@@ -435,7 +444,7 @@ kubectl get crd | grep external-secrets
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
 
 # 4. Применить ClusterSecretStore
-kubectl apply -f manifests/external-secrets/vault-cluster-secret-store.yaml
+kubectl apply -f manifests/services/external-secrets/vault-cluster-secret-store.yaml
 
 # 5. Проверить ClusterSecretStore
 kubectl get clustersecretstore
@@ -543,7 +552,7 @@ vault kv put secret/keycloak/admin \
 kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить ExternalSecret манифест для PostgreSQL admin credentials
-kubectl apply -f manifests/postgresql/postgresql-admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/postgresql/postgresql-admin-credentials-externalsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n postgresql
@@ -561,11 +570,11 @@ helm repo add bitnami https://charts.bitnami.com/bitnami
 helm repo update
 
 # 2. Установить PostgreSQL
-# Настройки для использования существующего Secret уже указаны в helm/postgresql/postgresql-values.yaml
+# Настройки для использования существующего Secret уже указаны в helm/services/postgresql/postgresql-values.yaml
 helm upgrade --install postgresql bitnami/postgresql \
   --namespace postgresql \
   --create-namespace \
-  -f helm/postgresql/postgresql-values.yaml
+  -f helm/services/postgresql/postgresql-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n postgresql
@@ -578,7 +587,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n p
 
 **Важно:**
 - PostgreSQL использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-- Размер хранилища по умолчанию: 8Gi (можно изменить в `helm/postgresql/postgresql-values.yaml`)
+- Размер хранилища по умолчанию: 8Gi (можно изменить в `helm/services/postgresql/postgresql-values.yaml`)
 - Secret `postgresql-admin-credentials` должен быть создан через External Secrets Operator перед установкой
 
 **Проверка подключения к PostgreSQL:**
@@ -686,7 +695,7 @@ kubectl get svc -n postgresql
 
 **Шаг 2: Обновить конфигурацию Keycloak**
 
-Откройте `manifests/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
+Откройте `manifests/services/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
 
 ```yaml
 database:
@@ -702,10 +711,10 @@ database:
 kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
 # Создать ExternalSecret для синхронизации секретов PostgreSQL из Vault
-kubectl apply -f manifests/keycloak/postgresql-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/keycloak/postgresql-credentials-externalsecret.yaml
 
 # Создать ExternalSecret для синхронизации admin credentials из Vault
-kubectl apply -f manifests/keycloak/admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/keycloak/admin-credentials-externalsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n keycloak
@@ -719,7 +728,7 @@ kubectl get secret keycloak-admin-credentials -n keycloak
 
 ```bash
 # 1. Создать Keycloak инстанс
-kubectl apply -f manifests/keycloak/keycloak-instance.yaml
+kubectl apply -f manifests/services/keycloak/keycloak-instance.yaml
 
 # 2. Проверить статус Keycloak
 kubectl get keycloak -n keycloak
@@ -743,20 +752,20 @@ helm repo update
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --create-namespace \
-  -f helm/cert-managar/cert-manager-values.yaml
+  -f helm/services/cert-managar/cert-manager-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n cert-manager
 kubectl get crd | grep cert-manager
 ```
 
-**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/services/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
 ### 9. Создание Gateway
 
 ```bash
 # 1. Применить Gateway
-kubectl apply -f manifests/gateway/gateway.yaml
+kubectl apply -f manifests/services/gateway/gateway.yaml
 
 # 2. Проверить статус Gateway
 kubectl get gateway -n default
@@ -774,14 +783,14 @@ kubectl describe gateway service-gateway -n default
 ```bash
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
 # ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
-kubectl apply -f manifests/cert-manager/cluster-issuer.yaml
+kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
 
 # 2. Проверить ClusterIssuer
 kubectl get clusterissuer
 kubectl describe clusterissuer letsencrypt-prod
 
 # 3. Применить Certificate
-kubectl apply -f manifests/cert-manager/gateway-certificate.yaml
+kubectl apply -f manifests/services/cert-manager/gateway-certificate.yaml
 
 # 4. Проверить статус Certificate
 kubectl get certificate -n default
@@ -793,11 +802,11 @@ watch kubectl get secret gateway-tls-cert -n default
 ```
 
 **Важно:** 
-- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/cert-manager/cluster-issuer.yaml`
+- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/services/cert-manager/cluster-issuer.yaml`
 - Gateway должен быть создан до ClusterIssuer, так как ClusterIssuer использует Gateway для HTTP-01 challenge
 - После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
 - Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
-- При добавлении новых приложений обновите `dnsNames` в `manifests/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
+- При добавлении новых приложений обновите `dnsNames` в `manifests/services/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
 
 ### 11. Установка Jenkins и Argo CD
 
@@ -858,14 +867,14 @@ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
 # Создать ExternalSecret для Argo CD
-kubectl apply -f manifests/argocd/admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/argocd/admin-credentials-externalsecret.yaml
 
 # Создать ExternalSecret для Jenkins
-kubectl apply -f manifests/jenkins/admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/jenkins/admin-credentials-externalsecret.yaml
 
 # Создать ExternalSecret для Grafana (будет использоваться при установке Prometheus Kube Stack)
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f manifests/grafana/admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/grafana/admin-credentials-externalsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n argocd
@@ -888,14 +897,14 @@ helm repo update
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
   --create-namespace \
-  -f helm/argocd/argocd-values.yaml \
+  -f helm/services/argocd/argocd-values.yaml \
   --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
 
-# 3. Установить Jenkins (admin credentials уже настроены в helm/jenkins/jenkins-values.yaml)
+# 3. Установить Jenkins (admin credentials уже настроены в helm/services/jenkins/jenkins-values.yaml)
 helm upgrade --install jenkins jenkins/jenkins \
   --namespace jenkins \
   --create-namespace \
-  -f helm/jenkins/jenkins-values.yaml
+  -f helm/services/jenkins/jenkins-values.yaml
 
 # 4. Проверить установку
 kubectl get pods -n argocd
@@ -978,7 +987,7 @@ ExternalSecret синхронизирует Client Secret из Vault напря�
 ```bash
 # Создать ExternalSecret для синхронизации OIDC client-secret напрямую в argocd-secret
 # Этот ExternalSecret обновляет секрет argocd-secret с ключом oidc.keycloak.clientSecret
-kubectl apply -f manifests/argocd/argocd-secret-oidc-externalsecret.yaml
+kubectl apply -f manifests/services/argocd/argocd-secret-oidc-externalsecret.yaml
 
 # Проверить статус ExternalSecret
 kubectl get externalsecret argocd-secret-oidc -n argocd
@@ -1008,13 +1017,13 @@ kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secre
 
 **Шаг 4: Обновить Argo CD с OIDC конфигурацией**
 
-OIDC конфигурация уже настроена в `helm/argocd/argocd-values.yaml`. Обновите Argo CD:
+OIDC конфигурация уже настроена в `helm/services/argocd/argocd-values.yaml`. Обновите Argo CD:
 
 ```bash
 # Обновить Argo CD с OIDC конфигурацией
 helm upgrade argocd argo/argo-cd \
   --namespace argocd \
-  -f helm/argocd/argocd-values.yaml \
+  -f helm/services/argocd/argocd-values.yaml \
   --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
 
 # Проверить, что Argo CD перезапустился
@@ -1024,7 +1033,7 @@ kubectl logs -f deployment/argocd-server -n argocd | grep -i oidc
 
 **Шаг 5: Настроить RBAC в Argo CD**
 
-RBAC уже настроен в `helm/argocd/argocd-values.yaml`. Группа `ArgoCDAdmins` из Keycloak привязана к встроенной роли `role:admin`, которая дает полные права администратора в Argo CD.
+RBAC уже настроен в `helm/services/argocd/argocd-values.yaml`. Группа `ArgoCDAdmins` из Keycloak привязана к встроенной роли `role:admin`, которая дает полные права администратора в Argo CD.
 
 Текущая конфигурация:
 ```yaml
@@ -1042,7 +1051,7 @@ configs:
 - Группа `ArgoCDAdmins` должна быть создана в Keycloak
 - Пользователи должны быть добавлены в эту группу
 - Встроенная роль `role:admin` предоставляет все административные права в Argo CD
-- Если нужно добавить другие группы или роли, отредактируйте `policy.csv` в `helm/argocd/argocd-values.yaml`
+- Если нужно добавить другие группы или роли, отредактируйте `policy.csv` в `helm/services/argocd/argocd-values.yaml`
 
 **Проверка OIDC:**
 
@@ -1052,11 +1061,11 @@ configs:
 4. Проверьте, что пользователь успешно аутентифицирован
 
 **Важно:**
-- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/argocd/argocd-values.yaml`
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/services/argocd/argocd-values.yaml`
 - Client Secret синхронизируется из Vault через External Secrets Operator напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`
 - ExternalSecret `argocd-secret-oidc` использует `creationPolicy: Merge` для добавления ключа в существующий секрет
 - RBAC настраивается на основе групп из Keycloak через `policy.csv`
-- **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/argocd/OIDC_TROUBLESHOOTING.md`
+- **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/services/argocd/OIDC_TROUBLESHOOTING.md`
 
 #### 10.5. Настройка GitHub API Token для Jenkins
 
@@ -1112,7 +1121,7 @@ vault kv get secret/jenkins/github
 
 ```bash
 # Создать ExternalSecret для синхронизации GitHub token
-kubectl apply -f manifests/jenkins/github-token-externalsecret.yaml
+kubectl apply -f manifests/services/jenkins/github-token-externalsecret.yaml
 
 # Проверить статус ExternalSecret
 kubectl get externalsecret jenkins-github-token -n jenkins
@@ -1130,13 +1139,13 @@ kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' |
 
 **Шаг 4: Обновить Jenkins с конфигурацией GitHub credentials**
 
-GitHub credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+GitHub credentials уже настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
 
 ```bash
 # Обновить Jenkins с новой конфигурацией
 helm upgrade jenkins jenkins/jenkins \
   --namespace jenkins \
-  -f helm/jenkins/jenkins-values.yaml
+  -f helm/services/jenkins/jenkins-values.yaml
 
 # Проверить, что Jenkins перезапустился
 kubectl get pods -n jenkins
@@ -1200,7 +1209,7 @@ vault kv get secret/jenkins/docker-registry
 
 ```bash
 # Создать ExternalSecret для синхронизации Docker Registry credentials
-kubectl apply -f manifests/jenkins/docker-registry-externalsecret.yaml
+kubectl apply -f manifests/services/jenkins/docker-registry-externalsecret.yaml
 
 # Проверить статус ExternalSecret
 kubectl get externalsecret jenkins-docker-registry -n jenkins
@@ -1219,13 +1228,13 @@ kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.passwo
 
 **Шаг 3: Обновить Jenkins с конфигурацией Docker Registry credentials**
 
-Docker Registry credentials уже настроены в `helm/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
+Docker Registry credentials уже настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
 
 ```bash
 # Обновить Jenkins с новой конфигурацией
 helm upgrade jenkins jenkins/jenkins \
   --namespace jenkins \
-  -f helm/jenkins/jenkins-values.yaml
+  -f helm/services/jenkins/jenkins-values.yaml
 
 # Проверить, что Jenkins перезапустился
 kubectl get pods -n jenkins
@@ -1295,6 +1304,276 @@ pipeline {
 - GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
 - Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
 
+#### 10.7. Добавление Docker Registry credentials для Kubernetes (ImagePullSecrets)
+
+Docker Registry credentials могут использоваться не только в Jenkins, но и в Kubernetes для доступа к приватным образам из подов. Это полезно для:
+- Pull образов из приватного Docker Registry в поды
+- Использования в Argo CD для развертывания приложений с приватными образами
+- Использования в других компонентах, которым нужен доступ к приватному registry
+
+**Важно:** Перед настройкой Docker Registry credentials убедитесь, что:
+- Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
+- Dev кластер развернут и настроен
+- External Secrets Operator установлен и работает в dev кластере
+- ClusterSecretStore для Vault настроен в dev кластере (см. раздел "Шаг 6: Установка и настройка External Secrets Operator для работы с внешним Vault")
+
+**Шаг 1: Создать и сохранить .dockerconfigjson в Vault**
+
+Для Kubernetes ImagePullSecrets требуется Secret типа `kubernetes.io/dockerconfigjson` с готовым JSON. Создайте и сохраните его в Vault:
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Создать .dockerconfigjson
+# Для Timeweb Container Registry используется API Token вместо пароля
+DOCKER_USERNAME="buildbyte-container-registry"
+DOCKER_PASSWORD="<ВАШ_API_TOKEN>"
+DOCKER_REGISTRY="buildbyte-container-registry.registry.twcstorage.ru"
+
+# Создать base64 encoded auth string
+AUTH_STRING=$(echo -n "$DOCKER_USERNAME:$DOCKER_PASSWORD" | base64 -w 0)
+
+# Создать .dockerconfigjson в формате JSON
+DOCKERCONFIGJSON=$(cat <<EOF | jq -c .
+{
+  "auths": {
+    "$DOCKER_REGISTRY": {
+      "username": "$DOCKER_USERNAME",
+      "password": "$DOCKER_PASSWORD",
+      "auth": "$AUTH_STRING"
+    }
+  }
+}
+EOF
+)
+
+# Сохранить в Vault
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/kubernetes/docker-registry \
+  dockerconfigjson='$DOCKERCONFIGJSON'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/kubernetes/docker-registry
+"
+```
+
+**Шаг 2: Создать ExternalSecret для синхронизации Docker Registry credentials**
+
+**Важно:** ExternalSecret создается в dev кластере, так как Docker Registry credentials нужны для pull образов в dev кластере, где развертываются приложения.
+
+Создайте файл `manifests/dev/docker-registry/docker-registry-externalsecret.yaml`:
+
+```yaml
+---
+# ExternalSecret для синхронизации Docker Registry credentials для использования в Kubernetes ImagePullSecrets
+# Использование:
+# 1. Убедитесь, что .dockerconfigjson сохранен в Vault по пути secret/kubernetes/docker-registry с ключом dockerconfigjson
+# 2. Убедитесь, что ClusterSecretStore для Vault настроен в dev кластере
+# 3. Примените манифест в dev кластере: kubectl apply -f manifests/dev/docker-registry/docker-registry-externalsecret.yaml
+# 4. Используйте Secret в ImagePullSecrets для подов, которым нужен доступ к приватному Docker Registry
+
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: docker-registry-credentials
+  namespace: 
+  labels:
+    app: docker-registry
+    component: credentials
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  target:
+    name: docker-registry-credentials
+    creationPolicy: Owner
+    template:
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ .dockerconfigjson }}"
+  data:
+    - secretKey: dockerconfigjson
+      remoteRef:
+        key: secret/kubernetes/docker-registry
+        property: dockerconfigjson
+```
+
+**Шаг 3: Применить ExternalSecret в dev кластере**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Создать namespace для Docker Registry credentials (если нужен отдельный namespace)
+# kubectl create namespace docker-registry --dry-run=client -o yaml | kubectl apply -f -
+
+# Применить ExternalSecret в dev кластере
+kubectl apply -f manifests/dev/docker-registry/docker-registry-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret docker-registry-credentials -n default
+kubectl describe externalsecret docker-registry-credentials -n default
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret docker-registry-credentials -n default --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret docker-registry-credentials -n default
+kubectl describe secret docker-registry-credentials -n default
+
+# Проверить тип Secret (должен быть kubernetes.io/dockerconfigjson)
+kubectl get secret docker-registry-credentials -n default -o jsonpath='{.type}' && echo
+
+# Проверить содержимое .dockerconfigjson (должно быть валидным JSON)
+kubectl get secret docker-registry-credentials -n default -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq .
+```
+
+**Шаг 4: Использование ImagePullSecrets в подах**
+
+После создания Secret можно использовать его в подах через `imagePullSecrets`:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  imagePullSecrets:
+    - name: docker-registry-credentials
+  containers:
+    - name: my-app
+      image: buildbyte-container-registry.registry.twcstorage.ru/my-app:latest
+      # ...
+```
+
+Или добавить ImagePullSecret на уровне ServiceAccount:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service-account
+  namespace: default
+imagePullSecrets:
+  - name: docker-registry-credentials
+```
+
+**Использование в Argo CD:**
+
+Для использования Docker Registry credentials в Argo CD приложениях:
+
+1. ExternalSecret уже создан в dev кластере (см. Шаг 3)
+2. Secret `docker-registry-credentials` будет автоматически синхронизирован в namespace `default` (или в указанном namespace)
+3. Для использования в других namespace создайте ExternalSecret в нужном namespace или скопируйте Secret
+4. Добавьте ImagePullSecret в ServiceAccount, который используется приложениями
+5. Или укажите `imagePullSecrets` в манифестах приложений
+
+**Пример для Argo CD Application:**
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+  namespace: argocd
+spec:
+  destination:
+    namespace: my-namespace
+    server: https://kubernetes.default.svc
+  source:
+    repoURL: https://github.com/example/my-app
+    path: k8s
+    targetRevision: main
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+```
+
+В манифестах приложения (в Git репозитории):
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-app
+  namespace: my-namespace
+imagePullSecrets:
+  - name: docker-registry-credentials
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: my-namespace
+spec:
+  template:
+    spec:
+      serviceAccountName: my-app
+      containers:
+        - name: my-app
+          image: buildbyte-container-registry.registry.twcstorage.ru/my-app:latest
+          # ...
+```
+
+**Важно:**
+- Secret должен иметь тип `kubernetes.io/dockerconfigjson`
+- Secret должен содержать ключ `.dockerconfigjson` с валидным JSON
+- Для использования в разных namespace создайте ExternalSecret в каждом namespace или используйте ClusterSecretStore с правильными настройками
+- Для Timeweb Container Registry используется API Token вместо пароля, но в Kubernetes Secret он сохраняется в поле `password` для совместимости
+
+**Диагностика, если ImagePullSecrets не работает:**
+
+```bash
+# 1. Проверить статус ExternalSecret
+kubectl get externalsecret docker-registry-credentials -n default
+kubectl describe externalsecret docker-registry-credentials -n default
+
+# 2. Проверить созданный Secret
+kubectl get secret docker-registry-credentials -n default -o yaml
+
+# 3. Проверить тип Secret
+kubectl get secret docker-registry-credentials -n default -o jsonpath='{.type}' && echo
+# Должно быть: kubernetes.io/dockerconfigjson
+
+# 4. Проверить содержимое .dockerconfigjson
+kubectl get secret docker-registry-credentials -n default -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq .
+
+# 5. Проверить логи External Secrets Operator
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i "docker-registry"
+
+# 6. Проверить события ExternalSecret
+kubectl get events -n default --field-selector involvedObject.name=docker-registry-credentials
+
+# 7. Проверить, что секрет существует в Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/kubernetes/docker-registry
+"
+
+# 8. Проверить, что под может использовать ImagePullSecret
+kubectl describe pod <pod-name> -n <namespace> | grep -i "imagepull\|pull"
+```
+
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
@@ -1342,7 +1621,7 @@ vault kv get secret/grafana/admin
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
 
 # Создать ExternalSecret для синхронизации admin credentials из Vault
-kubectl apply -f manifests/grafana/admin-credentials-externalsecret.yaml
+kubectl apply -f manifests/services/grafana/admin-credentials-externalsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get externalsecret -n kube-prometheus-stack
@@ -1362,11 +1641,11 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 # 2. Установить Prometheus Kube Stack
-# Admin credentials уже настроены в helm/prom-kube-stack/prom-kube-stack-values.yaml
+# Admin credentials уже настроены в helm/services/prom-kube-stack/prom-kube-stack-values.yaml
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --namespace kube-prometheus-stack \
   --create-namespace \
-  -f helm/prom-kube-stack/prom-kube-stack-values.yaml
+  -f helm/services/prom-kube-stack/prom-kube-stack-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n kube-prometheus-stack
@@ -1381,7 +1660,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
 - Secret `grafana-admin` должен быть создан через External Secrets Operator перед установкой
-- Admin credentials настроены в `helm/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
+- Admin credentials настроены в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -1452,7 +1731,7 @@ ExternalSecret синхронизирует Client Secret из Vault в секр
 
 ```bash
 # Создать ExternalSecret для синхронизации OIDC client-secret для Grafana
-kubectl apply -f manifests/grafana/oidc-secret-externalsecret.yaml
+kubectl apply -f manifests/services/grafana/oidc-secret-externalsecret.yaml
 
 # Проверить статус ExternalSecret
 kubectl get externalsecret grafana-oidc-secret -n kube-prometheus-stack
@@ -1474,8 +1753,8 @@ kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secre
 
 **Важно:**
 - ExternalSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
-- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
-- OIDC конфигурация уже настроена в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
+- OIDC конфигурация уже настроена в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
 - Если синхронизация не прошла, проверьте:
   - Существует ли секрет в Vault по пути `secret/grafana/oidc` с ключом `client_secret`
   - Настроен ли ClusterSecretStore для Vault
@@ -1505,9 +1784,9 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
 4. Проверьте, что пользователь успешно аутентифицирован
 
 **Важно:**
-- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/prom-kube-stack/prom-kube-stack-values.yaml`)
+- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`)
 - Client Secret синхронизируется из Vault через External Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
-- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/prom-kube-stack/prom-kube-stack-values.yaml`
+- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
 - Grafana автоматически читает переменные окружения с префиксом `GF_` для конфигурации
 - Роли настраиваются на основе групп из Keycloak через `role_attribute_path`:
   - Группа `GrafanaAdmins` получает роль `Admin`
@@ -1525,7 +1804,7 @@ helm repo update
 helm upgrade --install jaeger jaegertracing/jaeger \
   --namespace jaeger \
   --create-namespace \
-  -f helm/jaeger/jaeger-values.yaml
+  -f helm/services/jaeger/jaeger-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n jaeger
@@ -1538,13 +1817,13 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 **Важно:**
 - Jaeger настроен для приема трейсов через Jaeger и Zipkin протоколы
 - OpenTelemetry Collector настроен для приема и обработки трейсов
-- Конфигурация находится в `helm/jaeger/jaeger-values.yaml`
+- Конфигурация находится в `helm/services/jaeger/jaeger-values.yaml`
 
 **Доступ к Jaeger UI:**
 - Jaeger UI доступен через порт-форвардинг или через Ingress/HTTPRoute (если настроен)
 
 **Подробная документация:**
-- См. конфигурацию в `helm/jaeger/jaeger-values.yaml`
+- См. конфигурацию в `helm/services/jaeger/jaeger-values.yaml`
 
 ### 14. Создание HTTPRoute для приложений
 
@@ -1552,20 +1831,20 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 
 ```bash
 # 1. Применить HTTPRoute для Argo CD
-kubectl apply -f manifests/gateway/routes/argocd-https-route.yaml
-kubectl apply -f manifests/gateway/routes/argocd-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/argocd-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
 
 # 2. Применить HTTPRoute для Jenkins
-kubectl apply -f manifests/gateway/routes/jenkins-https-route.yaml
-kubectl apply -f manifests/gateway/routes/jenkins-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/jenkins-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
 
 # 3. Применить HTTPRoute для Grafana
-kubectl apply -f manifests/gateway/routes/grafana-https-route.yaml
-kubectl apply -f manifests/gateway/routes/grafana-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/grafana-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
 
 # 4. Применить HTTPRoute для Keycloak
-kubectl apply -f manifests/gateway/routes/keycloak-https-route.yaml
-kubectl apply -f manifests/gateway/routes/keycloak-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/keycloak-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
 
 # 5. Проверить HTTPRoute
 kubectl get httproute -A
@@ -1577,6 +1856,1061 @@ kubectl describe httproute keycloak-server -n keycloak
 # 6. Проверить, что HTTPRoute привязаны к Gateway
 kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 ```
+
+## Развертывание и настройка Dev кластера
+
+Пошаговая инструкция по развертыванию и настройке dev кластера для разработки и развертывания микросервисов.
+
+**Важно:** Dev кластер должен быть развернут после настройки Services кластера, так как он использует Vault из Services кластера для хранения секретов.
+
+### Шаг 1: Развертывание кластера через Terraform
+
+```bash
+# 1. Перейти в директорию dev
+cd terraform/dev
+
+# 2. Инициализировать Terraform (загрузит провайдеры и настроит backend)
+terraform init
+
+# 3. Проверить план развертывания (опционально)
+terraform plan
+
+# 4. Применить конфигурацию и создать кластер
+# Подтвердите создание ресурсов при запросе
+terraform apply
+
+# 5. После создания кластера, kubeconfig будет автоматически сохранен в:
+# ~/kubeconfig-dev-cluster.yaml
+```
+
+**Важно:** После создания кластера настройте kubectl для работы с dev кластером:
+
+```bash
+# Настроить kubeconfig для dev кластера
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить подключение к кластеру
+kubectl get nodes
+kubectl get pods -A
+
+# Проверить версию кластера
+kubectl version --short
+```
+
+### Шаг 2: Установка CSI драйвера Timeweb Cloud
+
+CSI драйвер необходим для работы с Persistent Volumes (сетевыми дисками):
+
+```bash
+# 1. Получить Cluster ID dev кластера
+# Cluster ID можно найти в панели управления Timeweb Cloud
+# Или получить из Terraform state:
+cd terraform/dev
+terraform show | grep -i "id.*=" | head -1
+
+# 2. Отредактировать helm/dev/csi-tw/csi-tw-values.yaml:
+#    - Указать TW_API_SECRET (API токен Timeweb Cloud)
+#    - Указать TW_CLUSTER_ID (ID dev кластера, будет отличаться от services кластера)
+
+# 3. Установить CSI драйвер
+# Примечание: Проверьте актуальный способ установки в документации Timeweb Cloud
+# Возможно, установка выполняется через панель управления, а не через Helm
+
+# Если установка через Helm доступна:
+helm repo add timeweb-cloud https://charts.timeweb.cloud  # Проверьте актуальный URL
+helm repo update
+helm upgrade --install csi-driver-timeweb-cloud timeweb-cloud/csi-driver \
+  --namespace kube-system \
+  -f helm/dev/csi-tw/csi-tw-values.yaml
+
+# 4. Проверить установку
+kubectl get pods -n kube-system | grep csi-driver
+kubectl get storageclass
+```
+
+**Важно:** 
+- Убедитесь, что API ключ имеет права на управление сетевыми дисками
+- Cluster ID для dev кластера будет отличаться от services кластера
+- Проверьте актуальную документацию Timeweb Cloud для установки CSI драйвера
+
+### Шаг 3: Установка Gateway API с NGINX Gateway Fabric
+
+Gateway API необходим для управления ingress трафиком:
+
+```bash
+# 1. Установить CRDs Gateway API (стандартная версия)
+kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/standard?ref=v2.3.0" | kubectl apply -f -
+
+# 2. Установить CRDs NGINX Gateway Fabric
+kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/crds.yaml
+
+# 3. Установить контроллер NGINX Gateway Fabric
+kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/default/deploy.yaml
+
+# 4. Проверить установку
+kubectl get pods -n nginx-gateway
+kubectl get gatewayclass
+
+# 5. Дождаться готовности контроллера
+kubectl wait --for=condition=ready pod -l app=nginx-gateway-fabric -n nginx-gateway --timeout=300s
+```
+
+**Примечание:** Gateway API опционален. Если ingress не требуется, этот шаг можно пропустить.
+
+### Шаг 4: Создание Gateway
+
+После установки Gateway API необходимо создать Gateway ресурс для обработки входящего трафика:
+
+```bash
+# 1. Применить Gateway
+kubectl apply -f manifests/dev/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway dev-gateway -n default
+
+# 3. Проверить, что Gateway получил IP адрес
+kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}'
+```
+
+**Примечание:** 
+- HTTP listener будет работать сразу после создания Gateway
+- HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на следующем шаге)
+- Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
+- После создания Gateway получите его IP адрес и настройте DNS записи для ваших доменов
+
+**Важно:** 
+- Имя Gateway: `dev-gateway` (используется в ClusterIssuer)
+- Gateway создается в namespace `default`
+- Убедитесь, что Gateway получил внешний IP адрес перед настройкой DNS
+
+### Шаг 5: Установка cert-manager
+
+cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt:
+
+```bash
+# 1. Добавить Helm репозиторий
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# 2. Установить cert-manager с поддержкой Gateway API
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  -f helm/dev/cert-manager/cert-manager-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n cert-manager
+kubectl get crd | grep cert-manager
+
+# 4. Дождаться готовности cert-manager
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+```
+
+**Важно:** 
+- Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+- Перед установкой убедитесь, что файл `helm/dev/cert-manager/cert-manager-values.yaml` настроен правильно
+
+**Примечание:** cert-manager опционален, если TLS сертификаты не требуются. Однако рекомендуется установить его для безопасного доступа к приложениям.
+
+#### 5.1. Создание ClusterIssuer и сертификата (опционально)
+
+После установки cert-manager можно создать ClusterIssuer и Certificate для автоматической выдачи TLS сертификатов:
+
+```bash
+# 1. Применить ClusterIssuer (отредактируйте email и gateway перед применением!)
+# ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
+kubectl apply -f manifests/dev/cert-manager/cluster-issuer.yaml
+
+# 2. Проверить ClusterIssuer
+kubectl get clusterissuer
+kubectl describe clusterissuer letsencrypt-prod
+
+# 3. Применить Certificate (отредактируйте dnsNames перед применением!)
+kubectl apply -f manifests/dev/cert-manager/gateway-certificate.yaml
+
+# 4. Проверить статус Certificate
+kubectl get certificate -n default
+kubectl describe certificate gateway-tls-cert -n default
+
+# 5. Дождаться создания Secret (может занять несколько минут)
+kubectl wait --for=condition=ready certificate gateway-tls-cert -n default --timeout=600s
+kubectl get secret gateway-tls-cert -n default
+```
+
+**Важно:**
+- Перед применением ClusterIssuer отредактируйте `manifests/dev/cert-manager/cluster-issuer.yaml`:
+  - Замените `admin@buildbyte.ru` на ваш реальный email
+  - Убедитесь, что `parentRefs[0].name` указывает на правильный Gateway (по умолчанию `dev-gateway`)
+- Перед применением Certificate отредактируйте `manifests/dev/cert-manager/gateway-certificate.yaml`:
+  - Добавьте домены ваших приложений в `dnsNames`
+  - Убедитесь, что `secretName` совпадает с `certificateRefs` в Gateway
+
+### Шаг 6: Установка и настройка External Secrets Operator для работы с внешним Vault
+
+External Secrets Operator будет подключаться к Vault, который находится в services кластере.
+
+#### 6.1. Установка External Secrets Operator
+
+```bash
+# 1. Добавить Helm репозиторий External Secrets
+helm repo add external-secrets https://charts.external-secrets.io
+helm repo update
+
+# 2. Установить External Secrets Operator
+helm upgrade --install external-secrets external-secrets/external-secrets \
+  --namespace external-secrets-system \
+  --create-namespace \
+  -f helm/dev/external-secrets/external-secrets-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n external-secrets-system
+kubectl get crd | grep external-secrets
+
+# 4. Дождаться готовности External Secrets Operator
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
+```
+
+#### 6.2. Проверка HTTPRoute для Vault в services кластере
+
+Vault доступен через HTTPRoute в services кластере по адресу `https://vault.buildbyte.ru`.
+
+**Проверка HTTPRoute:**
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Проверить HTTPRoute для Vault
+kubectl get httproute vault-server -n vault
+kubectl describe httproute vault-server -n vault
+
+# Проверить, что HTTPRoute правильно настроен
+kubectl get httproute vault-server -n vault -o yaml
+```
+
+**Текущий HTTPRoute для Vault:**
+- **Имя:** `vault-server`
+- **Namespace:** `vault`
+- **Hostname:** `vault.buildbyte.ru`
+- **Gateway:** `service-gateway` (HTTPS listener)
+- **Backend:** сервис `vault:8200` в namespace `vault`
+
+**Файл манифеста:** `manifests/services/gateway/routes/vault-https-route.yaml`
+
+**Важно:** 
+- Убедитесь, что DNS запись для `vault.buildbyte.ru` указывает на IP адрес Gateway в services кластере
+- Убедитесь, что TLS сертификат для `vault.buildbyte.ru` создан и валиден
+- HTTPRoute должен быть применен в services кластере: `kubectl apply -f manifests/services/gateway/routes/vault-https-route.yaml`
+
+**Адрес Vault для подключения из dev кластера:**
+- **HTTPS:** `https://vault.buildbyte.ru:443` (рекомендуется)
+- **HTTP:** `http://vault.buildbyte.ru:80` (будет редиректить на HTTPS)
+
+#### 6.3. Настройка Kubernetes Auth в Vault для dev кластера
+
+Vault должен быть настроен для аутентификации ServiceAccount из dev кластера:
+
+```bash
+# 1. Переключиться на services кластер (где находится Vault)
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 2. Аутентифицироваться в Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Если root token не найден, получите его:
+# kubectl exec -n vault vault-0 -- vault operator init -key-shares=1 -key-threshold=1 -format=json | jq -r '.root_token' > /tmp/vault-root-token.txt
+
+# 3. Создать ServiceAccount для External Secrets Operator в dev кластере
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Создать ServiceAccount для External Secrets Operator (если еще не создан)
+kubectl create serviceaccount external-secrets -n external-secrets-system --dry-run=client -o yaml | kubectl apply -f -
+
+# 4. Создать ServiceAccount для token reviewer в dev кластере
+# Этот ServiceAccount будет использоваться Vault для проверки токенов из dev кластера
+kubectl create serviceaccount vault-token-reviewer -n external-secrets-system --dry-run=client -o yaml | kubectl apply -f -
+
+# 5. Создать ClusterRoleBinding для token reviewer
+# Дать права на выполнение TokenReview запросов к Kubernetes API
+kubectl create clusterrolebinding vault-token-reviewer-auth-delegator \
+  --clusterrole=system:auth-delegator \
+  --serviceaccount=external-secrets-system:vault-token-reviewer \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 6. Получить токен ServiceAccount для token reviewer
+# Этот токен будет использоваться Vault для проверки токенов из dev кластера
+DEV_TOKEN_REVIEWER_JWT=$(kubectl create token vault-token-reviewer -n external-secrets-system --duration=8760h)
+
+# 7. Получить CA сертификат dev кластера
+DEV_CA_CERT=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d)
+
+# 8. Получить адрес Kubernetes API dev кластера
+# Обычно это адрес из kubeconfig
+DEV_K8S_HOST=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
+
+# 9. Настроить Kubernetes auth в Vault для dev кластера
+# Переключиться обратно на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Включить Kubernetes auth method (если еще не включен)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault auth enable -path=kubernetes-dev kubernetes 2>&1 || echo 'Kubernetes auth уже включен'
+"
+
+# Настроить конфигурацию Kubernetes auth для dev кластера
+# ВАЖНО: Используем токен token reviewer из dev кластера, а не из pod'а Vault
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault write auth/kubernetes-dev/config \
+  token_reviewer_jwt='$DEV_TOKEN_REVIEWER_JWT' \
+  kubernetes_host='$DEV_K8S_HOST' \
+  kubernetes_ca_cert='$DEV_CA_CERT' \
+  disable_iss_validation=true
+"
+
+# 10. Создать политику для External Secrets Operator из dev кластера
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault policy write external-secrets-dev-policy - <<'EOF'
+# Политика для External Secrets Operator из dev кластера
+path \"secret/data/*\" {
+  capabilities = [\"read\"]
+}
+EOF
+"
+
+# 11. Создать роль в Vault для External Secrets Operator из dev кластера
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault write auth/kubernetes-dev/role/external-secrets-operator \
+  bound_service_account_names=external-secrets \
+  bound_service_account_namespaces=external-secrets-system \
+  policies=external-secrets-dev-policy \
+  ttl=1h
+"
+```
+
+**Важно:** 
+- **Token reviewer JWT** должен быть получен из **dev кластера**, а не из pod'а Vault в services кластере
+- ServiceAccount `vault-token-reviewer` должен иметь права `system:auth-delegator` через ClusterRoleBinding
+- CA сертификат и адрес Kubernetes API должны соответствовать **dev кластеру**
+- Если CA сертификат слишком большой для передачи через переменную окружения, можно сохранить его в файл и использовать `kubernetes_ca_cert=@/path/to/dev-ca.pem`
+
+#### 6.4. Создание ClusterSecretStore для подключения к внешнему Vault
+
+Примените манифест ClusterSecretStore, который указывает на Vault в services кластере:
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Применить манифест ClusterSecretStore
+kubectl apply -f manifests/dev/external-secrets/vault-cluster-secret-store.yaml
+
+# Проверить ClusterSecretStore
+kubectl get clustersecretstore vault
+kubectl describe clustersecretstore vault
+```
+
+**Важно:** 
+- Адрес Vault: `https://vault.buildbyte.ru` (через HTTPRoute в services кластере)
+- Убедитесь, что DNS запись для `vault.buildbyte.ru` настроена и указывает на Gateway
+- Убедитесь, что TLS сертификат для `vault.buildbyte.ru` создан через cert-manager
+- HTTPRoute `vault-server` должен быть применен в services кластере
+
+### Шаг 7: Установка Fluent Bit (сбор логов) в dev кластере
+
+Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера.
+
+**Важно:**
+- В текущей конфигурации вывод логов настроен в **stdout** (для проверки). При необходимости измените `config.outputs` в `helm/dev/fluent-bit/fluent-bit-values.yaml` и направьте логи в Loki/Elasticsearch/другой backend.
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Добавить Helm репозиторий Fluent
+helm repo add fluent https://fluent.github.io/helm-charts
+helm repo update
+
+# Установить Fluent Bit в namespace logging
+helm upgrade --install fluent-bit fluent/fluent-bit \
+  --namespace logging \
+  --create-namespace \
+  -f helm/dev/fluent-bit/fluent-bit-values.yaml
+
+# Проверить установку
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
+kubectl get daemonset -n logging fluent-bit
+
+# Посмотреть логи Fluent Bit (должны быть записи о запуске и сборе логов)
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=100
+```
+
+### Создание базовых Namespaces
+
+Namespaces для сервисов будут создаваться вручную позже в зависимости от названий сервисов.
+
+```bash
+# Пример создания namespace для сервиса:
+kubectl create namespace <название-сервиса> --dry-run=client -o yaml | kubectl apply -f -
+
+# Проверить созданные namespaces
+kubectl get namespaces
+```
+
+### Добавление dev кластера в Argo CD
+
+Argo CD в services кластере должен быть настроен для управления приложениями в dev кластере.
+
+**Примечание:** Поскольку в Argo CD настроена авторизация через Keycloak (OIDC), используется способ через Secret, который не требует авторизации через CLI.
+
+```bash
+# 1. Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 2. Создать Secret с kubeconfig dev кластера для Argo CD
+# Получить адрес API сервера dev кластера
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
+
+# Создать Secret с правильным форматом config
+# Argo CD ожидает, что config будет содержать полный kubeconfig в формате YAML
+# Используем временный файл для безопасной обработки многострочного YAML
+
+# Создать временные файлы
+TMP_CONFIG=$(mktemp)
+TMP_SECRET=$(mktemp)
+
+# Получить kubeconfig
+kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten > "$TMP_CONFIG"
+
+# Создать манифест Secret с stringData
+cat > "$TMP_SECRET" <<'SECRET_HEADER'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dev-cluster-secret
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: dev-cluster
+  server: 
+SECRET_HEADER
+
+# Добавить server (без подстановки переменных в heredoc)
+echo "  $DEV_CLUSTER_SERVER" >> "$TMP_SECRET"
+echo "  config: |" >> "$TMP_SECRET"
+
+# Добавить kubeconfig с правильными отступами (4 пробела для YAML)
+sed 's/^/    /' "$TMP_CONFIG" >> "$TMP_SECRET"
+
+# Применить манифест
+kubectl apply -f "$TMP_SECRET"
+
+# Удалить временные файлы
+rm -f "$TMP_CONFIG" "$TMP_SECRET"
+
+# Способ 2: Альтернативный способ с JSON форматом config (если способ 1 не работает)
+# Argo CD может ожидать config в формате JSON строки
+# Создать config как JSON объект
+CONFIG_JSON='{"tlsClientConfig":{"insecure":false}}'
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dev-cluster-secret
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: dev-cluster
+  server: $DEV_CLUSTER_SERVER
+  config: '$CONFIG_JSON'
+EOF
+
+# Примечание: Если нужна аутентификация, добавьте в CONFIG_JSON:
+# - bearerToken: токен для аутентификации
+# - tlsClientConfig.caData: CA сертификат (base64)
+# - tlsClientConfig.certData: клиентский сертификат (base64)
+# - tlsClientConfig.keyData: клиентский ключ (base64)
+
+# 3. Проверить, что Secret создан
+kubectl get secret dev-cluster-secret -n argocd
+kubectl describe secret dev-cluster-secret -n argocd
+
+# 4. Проверить статус кластера в Argo CD через веб-интерфейс
+# Откройте https://argo.buildbyte.ru
+# Авторизуйтесь через Keycloak
+# Перейдите в Settings > Clusters
+# Должен отображаться кластер dev-cluster со статусом "Connected"
+```
+
+**Диагностика, если кластер не отображается в интерфейсе:**
+
+```bash
+# 1. Проверить формат Secret
+kubectl get secret dev-cluster-secret -n argocd -o yaml
+
+# Убедитесь, что Secret содержит:
+# - name: dev-cluster (в data или stringData)
+# - server: адрес API сервера dev кластера
+# - config: полный kubeconfig в формате YAML
+# - метка: argocd.argoproj.io/secret-type: cluster
+
+# Проверить декодированные значения (если Secret использует data вместо stringData)
+kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
+kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
+kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.config}' | base64 -d | head -20
+
+# Если Secret использует stringData, проверить через describe
+kubectl describe secret dev-cluster-secret -n argocd
+
+# 2. Проверить логи Argo CD Application Controller
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
+
+# 3. Проверить, что Argo CD может подключиться к dev кластеру
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить доступность API сервера
+kubectl cluster-info
+
+# 4. Проверить формат kubeconfig
+# Убедитесь, что kubeconfig содержит все необходимые поля:
+kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten
+
+# 5. Пересоздать Secret с правильным форматом (если нужно)
+# Удалить существующий Secret
+kubectl delete secret dev-cluster-secret -n argocd
+
+# Создать Secret заново (см. шаг 2 выше)
+
+# 6. Проверить логи Argo CD для детальной информации об ошибке
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "dev-cluster\|unmarshal\|cluster secret"
+
+# 7. Альтернативный способ: создать Secret через kubectl create с правильным форматом
+# Если предыдущий способ не работает, попробуйте:
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
+
+# Создать Secret напрямую через kubectl (без временных файлов)
+kubectl create secret generic dev-cluster-secret \
+  --from-literal=name=dev-cluster \
+  --from-literal=server="$DEV_CLUSTER_SERVER" \
+  --from-file=config=$HOME/kubeconfig-dev-cluster.yaml \
+  -n argocd \
+  --dry-run=client -o yaml | \
+  kubectl label --local -f - argocd.argoproj.io/secret-type=cluster -o yaml | \
+  kubectl apply -f -
+```
+
+**Типичные проблемы:**
+
+1. **Secret не содержит правильные ключи:**
+   - Убедитесь, что Secret содержит `name`, `server` и `config`
+   - `config` должен быть полным kubeconfig в формате YAML
+
+2. **Неправильный формат kubeconfig:**
+   - Убедитесь, что kubeconfig содержит `clusters`, `users`, `contexts`
+   - Проверьте, что все сертификаты и токены валидны
+
+3. **Argo CD не может подключиться к API серверу:**
+   - Проверьте сетевую доступность между кластерами
+   - Убедитесь, что API сервер dev кластера доступен из services кластера
+
+4. **Метка отсутствует:**
+   - Убедитесь, что Secret имеет метку `argocd.argoproj.io/secret-type: cluster`
+
+**Важно:**
+- Argo CD должен иметь доступ к API серверу dev кластера
+- Если кластеры находятся в разных сетях, убедитесь, что сетевые правила разрешают доступ
+- После добавления кластера может потребоваться несколько секунд для его появления в интерфейсе
+- После добавления кластера можно создавать Application в Argo CD, которые будут развертываться в dev кластер
+
+#### Добавление dev кластера в Argo CD через External Secrets Operator
+
+Альтернативный способ добавления dev кластера в Argo CD через External Secrets Operator, который синхронизирует kubeconfig из Vault.
+
+**Преимущества:**
+- Централизованное хранение kubeconfig в Vault
+- Автоматическая синхронизация при изменении kubeconfig
+- Управление через Git (ExternalSecret манифест)
+
+**Шаг 1: Подготовить kubeconfig для Argo CD**
+
+Argo CD ожидает упрощенный формат config с `bearerToken` и `tlsClientConfig`:
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Получить адрес API сервера
+DEV_CLUSTER_SERVER=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
+
+# Получить токен (если используется токен для аутентификации)
+# Для ServiceAccount токена:
+DEV_TOKEN=$(kubectl create token dashboard-user -n kube-system --duration=8760h)
+
+# Получить CA сертификат (base64)
+DEV_CA_DATA=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
+
+# Извлечь serverName из URL (убрать https:// и порт)
+DEV_SERVER_NAME=$(echo $DEV_CLUSTER_SERVER | sed 's|https://||' | sed 's|:.*||')
+
+# Создать config в формате JSON
+CONFIG_JSON=$(cat <<EOF | jq -c .
+{
+  "bearerToken": "$DEV_TOKEN",
+  "tlsClientConfig": {
+    "serverName": "$DEV_SERVER_NAME",
+    "caData": "$DEV_CA_DATA"
+  }
+}
+EOF
+)
+
+# Вывести config для проверки
+echo "Config JSON:"
+echo $CONFIG_JSON | jq .
+```
+
+**Шаг 2: Сохранить kubeconfig в Vault**
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Убедиться, что KV v2 секретный движок включен
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
+"
+
+# Сохранить kubeconfig в Vault
+# ВАЖНО: Замените <DEV_CLUSTER_SERVER>, <CONFIG_JSON> на реальные значения из шага 1
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/argocd/dev-cluster \
+  name='dev-cluster' \
+  server='<DEV_CLUSTER_SERVER>' \
+  config='<CONFIG_JSON>'
+"
+
+# Или сохранить через переменные окружения (более безопасно)
+# Сначала установите переменные из шага 1, затем:
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/argocd/dev-cluster \
+  name='dev-cluster' \
+  server='$DEV_CLUSTER_SERVER' \
+  config='$CONFIG_JSON'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/argocd/dev-cluster
+"
+```
+
+**Шаг 3: Создать ExternalSecret манифест**
+
+Создайте файл `manifests/services/argocd/dev-cluster-externalsecret.yaml`:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: dev-cluster-secret
+  namespace: argocd
+  labels:
+    app: argocd
+    component: cluster-config
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault
+    kind: ClusterSecretStore
+  target:
+    name: dev-cluster
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          argocd.argoproj.io/secret-type: cluster
+      data:
+        name: "{{ .name }}"
+        server: "{{ .server }}"
+        config: "{{ .config }}"
+  data:
+    - secretKey: name
+      remoteRef:
+        key: secret/argocd/dev-cluster
+        property: name
+    - secretKey: server
+      remoteRef:
+        key: secret/argocd/dev-cluster
+        property: server
+    - secretKey: config
+      remoteRef:
+        key: secret/argocd/dev-cluster
+        property: config
+```
+
+**Шаг 4: Применить ExternalSecret**
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить ExternalSecret
+kubectl apply -f manifests/services/argocd/dev-cluster-externalsecret.yaml
+
+# Проверить статус ExternalSecret
+kubectl get externalsecret dev-cluster-secret -n argocd
+kubectl describe externalsecret dev-cluster-secret -n argocd
+
+# Дождаться синхронизации (может занять несколько секунд)
+kubectl wait --for=condition=Ready externalsecret dev-cluster-secret -n argocd --timeout=60s
+
+# Проверить созданный Secret
+kubectl get secret dev-cluster -n argocd
+kubectl describe secret dev-cluster -n argocd
+
+# Проверить, что Secret содержит правильные ключи
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.config}' | base64 -d | jq .
+
+# Проверить метку
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.metadata.labels}' | jq .
+```
+
+**Шаг 5: Проверить статус кластера в Argo CD**
+
+```bash
+# Проверить логи Argo CD Application Controller
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i "dev-cluster\|cluster secret"
+
+# Проверить статус кластера в Argo CD через веб-интерфейс
+# Откройте https://argo.buildbyte.ru
+# Авторизуйтесь через Keycloak
+# Перейдите в Settings > Clusters
+# Должен отображаться кластер dev-cluster со статусом "Connected"
+```
+
+**Важно:**
+- ExternalSecret создает Secret с именем `dev-cluster` (указано в `target.name`)
+- Secret автоматически получает метку `argocd.argoproj.io/secret-type: cluster` через template
+- Если Secret уже существует, используйте `creationPolicy: Merge` вместо `Owner`
+- Config должен быть в формате JSON строки (как в примере выше)
+- Токен должен иметь достаточные права для доступа к API серверу dev кластера
+- После обновления kubeconfig в Vault, ExternalSecret автоматически синхронизирует изменения (с интервалом `refreshInterval: 1h`)
+
+**Диагностика, если кластер не отображается:**
+
+```bash
+# 1. Проверить статус ExternalSecret
+kubectl get externalsecret dev-cluster-secret -n argocd
+kubectl describe externalsecret dev-cluster-secret -n argocd
+
+# Проверить события ExternalSecret
+kubectl get events -n argocd --field-selector involvedObject.name=dev-cluster-secret
+
+# 2. Проверить логи External Secrets Operator
+kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i "dev-cluster\|argocd"
+
+# 3. Проверить, что секрет существует в Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/argocd/dev-cluster
+"
+
+# 4. Проверить формат Secret
+kubectl get secret dev-cluster -n argocd -o yaml
+
+# Убедитесь, что Secret содержит:
+# - name: dev-cluster (в data)
+# - server: адрес API сервера dev кластера (в data)
+# - config: JSON строка с bearerToken и tlsClientConfig (в data)
+# - метка: argocd.argoproj.io/secret-type: cluster
+
+# 5. Проверить декодированные значения
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
+kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.config}' | base64 -d | jq .
+
+# 6. Проверить логи Argo CD Application Controller
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "dev-cluster\|unmarshal\|cluster secret"
+```
+
+### Создание Argo CD Application для развертывания приложений
+
+После добавления dev кластера в Argo CD можно создавать Application для развертывания приложений в dev кластере.
+
+**Важно:** Перед созданием Application убедитесь, что:
+- Dev кластер добавлен в Argo CD и имеет статус "Connected"
+- Git репозиторий с Helm chart приложения доступен
+- Docker Registry credentials настроены в dev кластере (если используются приватные образы)
+
+**Пример: Создание Application для donweather-ms-weather**
+
+Создайте файл `manifests/services/argocd/applications/donweather/application-ms-weather.yaml`:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: donweather-ms-weather-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/opusdvs/DonWeather-ms-weather.git
+    targetRevision: dev
+    path: .helm/donweather-ms-weather
+    helm:
+      valueFiles:
+        - values.yaml
+      # Переопределение значений через параметры (опционально)
+      # values: |
+      #   replicaCount: 2
+      #   image:
+      #     repository: buildbyte-container-registry.registry.twcstorage.ru/donweather-ms-weather
+      #     tag: latest
+  
+  destination:
+    name: dev-cluster
+    namespace: donweather
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+```
+
+**Применить Application:**
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Создать директорию для Application (если еще не создана)
+mkdir -p manifests/services/argocd/applications/donweather
+
+# Применить Application
+kubectl apply -f manifests/services/argocd/applications/donweather/application-ms-weather.yaml
+
+# Проверить статус Application
+kubectl get application donweather-ms-weather-dev -n argocd
+kubectl describe application donweather-ms-weather-dev -n argocd
+
+# Проверить статус синхронизации
+kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.sync.status}' && echo
+kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.health.status}' && echo
+
+# Проверить логи синхронизации
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i "donweather-ms-weather"
+```
+
+**Проверка Application в веб-интерфейсе Argo CD:**
+
+1. Откройте Argo CD: `https://argo.buildbyte.ru`
+2. Авторизуйтесь через Keycloak
+3. Перейдите в раздел **Applications**
+4. Должно отображаться приложение `donweather-ms-weather-dev`
+5. Проверьте статус синхронизации и health статус
+
+**Важно:**
+- `destination.name: dev-cluster` указывает на кластер, добавленный в Argo CD
+- `destination.namespace: donweather` - namespace в dev кластере, где будет развернуто приложение
+- `syncPolicy.automated` включает автоматическую синхронизацию при изменениях в Git
+- `syncOptions: CreateNamespace=true` автоматически создает namespace, если он не существует
+- Если приложение использует приватные Docker образы, убедитесь, что Docker Registry credentials настроены в namespace `donweather` (см. раздел 10.7)
+
+**Диагностика, если Application не синхронизируется:**
+
+```bash
+# 1. Проверить статус Application
+kubectl get application donweather-ms-weather-dev -n argocd -o yaml
+
+# 2. Проверить условия Application
+kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.conditions}' | jq .
+
+# 3. Проверить логи Argo CD Application Controller
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "donweather-ms-weather"
+
+# 4. Проверить доступность Git репозитория
+# Убедитесь, что репозиторий доступен и содержит Helm chart по указанному пути
+
+# 5. Проверить доступность dev кластера
+kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.conditions[?(@.type=="ConnectionError")]}' | jq .
+
+# 6. Проверить ресурсы в dev кластере
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+kubectl get all -n donweather
+```
+
+### Настройка доступа к PostgreSQL из dev кластера
+
+PostgreSQL находится в services кластере, но должен быть доступен для приложений в dev кластере. Для обеспечения доступа создайте LoadBalancer Service для PostgreSQL в services кластере:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Создать LoadBalancer Service для PostgreSQL
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-external
+  namespace: postgresql
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: postgresql
+EOF
+
+# Проверить создание Service
+kubectl get svc postgresql-external -n postgresql
+
+# Дождаться получения внешнего IP адреса
+kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' svc postgresql-external -n postgresql --timeout=300s
+
+# Получить внешний IP адрес
+POSTGRES_EXTERNAL_IP=$(kubectl get svc postgresql-external -n postgresql -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "PostgreSQL доступен по адресу: $POSTGRES_EXTERNAL_IP:5432"
+```
+
+**Использование внешнего адреса в приложении:**
+
+В Helm chart приложения используйте внешний IP адрес вместо Service DNS:
+
+```yaml
+env:
+  - name: DB_HOST
+    value: "<ВНЕШНИЙ_IP_АДРЕС_POSTGRESQL>"
+  - name: DB_PORT
+    value: "5432"
+```
+
+**Важно:**
+- Убедитесь, что firewall разрешает подключения к порту 5432 с IP адресов dev кластера
+- Для production рекомендуется использовать VPN или приватную сеть вместо публичного LoadBalancer
+- Рассмотрите использование TLS для шифрования соединения
+
+#### Проверка подключения к PostgreSQL из dev кластера
+
+После настройки доступа проверьте подключение:
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Получить внешний IP адрес PostgreSQL из services кластера
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+POSTGRES_EXTERNAL_IP=$(kubectl get svc postgresql-external -n postgresql -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Создать временный pod для проверки подключения
+kubectl run postgresql-test --image=postgres:15 -n donweather --rm -it --restart=Never -- sh -c "
+  PGHOST=$POSTGRES_EXTERNAL_IP
+  PGPORT=5432
+  PGUSER=ms_weather
+  PGPASSWORD=\$(kubectl get secret ms-weather-postgresql-credentials -n donweather -o jsonpath='{.data.password}' | base64 -d)
+  PGDATABASE=ms_weather
+  psql -h \$PGHOST -p \$PGPORT -U \$PGUSER -d \$PGDATABASE -c 'SELECT version();'
+"
+```
+
+**Важно:**
+- Замените `$POSTGRES_EXTERNAL_IP` на реальный внешний IP адрес LoadBalancer Service
+- Убедитесь, что LoadBalancer Service получил внешний IP адрес перед проверкой подключения
+
+### Проверка установки
+
+После выполнения всех шагов проверьте установку:
+
+```bash
+# 1. Проверить CSI драйвер
+kubectl get pods -n kube-system | grep csi-driver
+kubectl get storageclass
+
+# 2. Проверить Gateway API
+kubectl get pods -n nginx-gateway
+kubectl get gatewayclass
+
+# 3. Проверить Gateway
+kubectl get gateway -n default
+kubectl describe gateway dev-gateway -n default
+kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}' && echo
+
+# 4. Проверить cert-manager
+kubectl get pods -n cert-manager
+kubectl get crd | grep cert-manager
+
+# 5. Проверить External Secrets Operator
+kubectl get pods -n external-secrets-system
+kubectl get clustersecretstore vault
+
+# 6. Проверить namespaces
+kubectl get namespaces
+```
+
+### Следующие шаги
+
+После настройки dev кластера:
+
+1. **Настроить доступ к кластеру для разработчиков**
+2. **Настроить CI/CD интеграцию** (Jenkins для развертывания в dev кластер)
+3. **Настроить Argo CD** для управления приложениями в dev кластере (из services кластера)
+4. **Развернуть тестовые приложения** через Argo CD или Helm
 
 ## Полный чек-лист установки
 
@@ -1675,8 +3009,8 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 
 ## Дополнительная документация
 
-- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
-- **Настройка Keycloak Authentication для Jenkins:** [`helm/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/jenkins/JENKINS_KEYCLOAK_SETUP.md)
+- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+- **Настройка Keycloak Authentication для Jenkins:** [`helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md)
 
 ## Важные замечания
 

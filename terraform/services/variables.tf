@@ -45,7 +45,7 @@ variable "home_dir" {
   default     = "/home/opusdv"
 }
 
-variable "cpu" {
+variable "node_group_cpu" {
   type        = number
   description = "CPU"
   default     = 4

@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: donweather-ms-weather-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/opusdvs/DonWeather-ms-weather.git
+    targetRevision: dev
+    path: .helm/donweather-ms-weather
+    helm:
+      valueFiles:
+        - values.yaml
+      # Переопределение значений через параметры
+      # Или используйте values для более сложных структур
+      # values: |
+      #   replicaCount: 2
+      #   image:
+      #     repository: your-registry/donweather-ms-weather
+      #     tag: latest
+  
+  destination:
+    name: dev-cluster
+    namespace: donweather
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

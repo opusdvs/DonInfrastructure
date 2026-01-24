@@ -1,11 +1,11 @@
 data "twc_k8s_preset" "k8s-preset-master" {
-  cpu      = 4
+  cpu      = var.node_group_cpu
   type     = "master"
   location = var.region
 }
 
 data "twc_k8s_preset" "k8s-preset-node" {
-  cpu      = 2
+  cpu      = var.node_group_cpu
   type     = "worker"
   location = var.region
 }

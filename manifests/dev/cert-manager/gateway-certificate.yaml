@@ -1,0 +1,16 @@
+---
+# Certificate для Gateway в Dev кластере
+# Обновите dnsNames с доменами ваших приложений в dev окружении
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-tls-cert
+  namespace: default
+spec:
+  secretName: gateway-tls-cert   # <- критично, должен совпадать с certificateRefs в Gateway
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - donweather.dev.buildbyte.ru
+    - api.donweather.dev.buildbyte.ru

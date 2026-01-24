@@ -1,0 +1,78 @@
+# Fluent Bit (dev cluster)
+# Chart repo: https://fluent.github.io/helm-charts (chart: fluent/fluent-bit)
+#
+# Install (dev cluster):
+#   export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+#   helm repo add fluent https://fluent.github.io/helm-charts
+#   helm repo update
+#   helm upgrade --install fluent-bit fluent/fluent-bit \
+#     --namespace logging \
+#     --create-namespace \
+#     -f helm/dev/fluent-bit/fluent-bit-values.yaml
+#
+# Notes:
+# - This configuration reads container logs from /var/log/containers/*.log
+# - Output is stdout (see config.outputs). Change it to Loki/Elasticsearch/etc when needed.
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: fluent-bit
+
+# Make sure it can run on all nodes (including tainted ones, if any)
+tolerations:
+  - operator: Exists
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+config:
+  service: |
+    [SERVICE]
+        Flush         1
+        Daemon        Off
+        Log_Level     info
+        Parsers_File  parsers.conf
+        Parsers_File  custom_parsers.conf
+
+  inputs: |
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            cri
+        DB                /var/log/flb_kube.db
+        Mem_Buf_Limit     10MB
+        Skip_Long_Lines   On
+        Refresh_Interval  5
+
+  filters: |
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Keep_Log            Off
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude On
+
+  outputs: |
+    [OUTPUT]
+        Name   stdout
+        Match  kube.*
+
+  # Fallback parser for CRI formatted logs (if your Fluent Bit image doesn't include it)
+  customParsers: |
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+

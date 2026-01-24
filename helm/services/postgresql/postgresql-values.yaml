@@ -49,8 +49,9 @@ global:
     ## @param global.postgresql.service.ports.postgresql PostgreSQL service port (overrides `service.ports.postgresql`)
     ##
     service:
+      type: LoadBalancer  # или NodePort
       ports:
-        postgresql: ""
+        postgresql: 5432
   ## Compatibility adaptations for Kubernetes platforms
   ##
   compatibility:
@@ -731,7 +732,7 @@ primary:
   service:
     ## @param primary.service.type Kubernetes Service type
     ##
-    type: ClusterIP
+    type: LoadBalancer
     ## @param primary.service.ports.postgresql PostgreSQL service port
     ##
     ports:
