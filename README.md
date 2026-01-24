@@ -1863,6 +1863,19 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 
 **Важно:** Dev кластер должен быть развернут после настройки Services кластера, так как он использует Vault из Services кластера для хранения секретов.
 
+**GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **external-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере:
+
+- `manifests/services/argocd/applications/dev/application-cert-manager.yaml`
+- `manifests/services/argocd/applications/dev/application-external-secrets.yaml`
+- `manifests/services/argocd/applications/dev/application-fluent-bit.yaml`
+
+Применение (в **services** кластере):
+
+```bash
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+kubectl apply -f manifests/services/argocd/applications/dev/
+```
+
 ### Шаг 1: Развертывание кластера через Terraform
 
 ```bash
