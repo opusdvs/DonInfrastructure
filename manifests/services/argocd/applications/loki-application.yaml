@@ -1,32 +1,32 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: fluent-bit-dev
+  name: loki
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: dev-infrastructure
-
+  project: default
+  
   sources:
     # Helm chart source
-    - repoURL: https://fluent.github.io/helm-charts
-      chart: fluent-bit
-      targetRevision: 0.55.0
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki
+      targetRevision: 6.21.0
       helm:
-        releaseName: fluent-bit
+        releaseName: loki
         valueFiles:
-          - $values/helm/dev/fluent-bit/fluent-bit-values.yaml
-
+          - $values/helm/services/loki/loki-values.yaml
+    
     # Values source (this repository)
     - repoURL: https://github.com/opusdvs/DonInfrastructure.git
       targetRevision: main
-      ref: helm/dev/fluent-bit/fluent-bit-values.yaml
-
+      ref: values
+  
   destination:
-    name: dev-cluster
+    server: https://kubernetes.default.svc
     namespace: logging
-
+  
   syncPolicy:
     automated:
       prune: true
@@ -34,6 +34,7 @@ spec:
       allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
       - PrunePropagationPolicy=foreground
       - PruneLast=true
     retry:
@@ -42,4 +43,3 @@ spec:
         duration: 5s
         factor: 2
         maxDuration: 3m
-

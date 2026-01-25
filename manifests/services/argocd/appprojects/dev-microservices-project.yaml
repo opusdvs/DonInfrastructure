@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev-microservices
+  namespace: argocd
+  # Финализатор для предотвращения случайного удаления
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Проект для микросервисов в dev кластере (donweather-ms-weather, donweather-front и т.д.)
+
+  # Разрешенные источники (репозитории)
+  sourceRepos:
+    # Репозитории микросервисов
+    - 'https://github.com/opusdvs/DonWeather-ms-weather.git'
+    - 'https://github.com/opusdvs/DonWeather-front.git'
+    # Репозиторий с конфигурацией инфраструктуры (для values, если используется)
+    - 'https://github.com/opusdvs/DonInfrastructure.git'
+    # Разрешить все репозитории с префиксом DonWeather (для новых микросервисов)
+    # - 'https://github.com/opusdvs/DonWeather-*'
+    # Или разрешить все репозитории (опционально, для гибкости)
+    # - '*'
+
+  # Разрешенные кластеры
+  destinations:
+    # Dev кластер для микросервисов (по имени кластера, добавленного в Argo CD)
+    - namespace: 'donweather'
+      name: 'dev-cluster'
+    # Разрешить все namespaces в dev кластере (для гибкости при добавлении новых микросервисов)
+    - namespace: '*'
+      name: 'dev-cluster'
+
+  # Разрешенные типы ресурсов
+  clusterResourceWhitelist:
+    # Запретить создание ClusterRole, ClusterRoleBinding и других кластерных ресурсов
+    # (микросервисы не должны создавать кластерные ресурсы)
+    - group: ''
+      kind: 'Namespace'
+    # Разрешить только Namespace для создания namespace'ов приложений
+
+  # Разрешенные namespace ресурсы
+  namespaceResourceWhitelist:
+    # Разрешить все стандартные ресурсы для микросервисов
+    - group: '*'
+      kind: '*'
+
+  # Роли и права доступа (опционально)
+  roles:
+    # Роль для администраторов микросервисов
+    - name: microservices-admin
+      description: Полный доступ к микросервисам в dev кластере
+      policies:
+        - p, proj:dev-microservices:microservices-admin, applications, *, dev-microservices/*, allow
+        - p, proj:dev-microservices:microservices-admin, repositories, get, dev-microservices/*, allow
+        - p, proj:dev-microservices:microservices-admin, repositories, create, dev-microservices/*, allow
+        - p, proj:dev-microservices:microservices-admin, repositories, update, dev-microservices/*, allow
+        - p, proj:dev-microservices:microservices-admin, repositories, delete, dev-microservices/*, allow
+      groups:
+        - MicroservicesAdmins
+
+    # Роль для разработчиков (только синхронизация своих микросервисов)
+    - name: developer
+      description: Доступ на синхронизацию микросервисов для разработчиков
+      policies:
+        - p, proj:dev-microservices:developer, applications, sync, dev-microservices/*, allow
+        - p, proj:dev-microservices:developer, applications, get, dev-microservices/*, allow
+        - p, proj:dev-microservices:developer, applications, action/*, dev-microservices/*, allow
+      groups:
+        - Developers
+
+    # Роль для операторов (только просмотр и синхронизация)
+    - name: operator
+      description: Доступ на просмотр и синхронизацию микросервисов
+      policies:
+        - p, proj:dev-microservices:operator, applications, get, dev-microservices/*, allow
+        - p, proj:dev-microservices:operator, applications, sync, dev-microservices/*, allow
+      groups:
+        - Operators

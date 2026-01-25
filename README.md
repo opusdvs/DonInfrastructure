@@ -1576,7 +1576,9 @@ kubectl describe pod <pod-name> -n <namespace> | grep -i "imagepull\|pull"
 
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
-**Важно:** Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
+**Важно:** 
+- Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana (`additionalDataSources` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`). Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен.
 
 #### 12.1. Создание секрета в Vault и ExternalSecret для Grafana admin credentials
 
@@ -1635,6 +1637,8 @@ kubectl get secret grafana-admin -n kube-prometheus-stack
 
 #### 12.2. Установка Prometheus Kube Stack
 
+**Важно:** Убедитесь, что Loki развернут (см. раздел 13) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
+
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -1661,6 +1665,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
 - Secret `grafana-admin` должен быть создан через External Secrets Operator перед установкой
 - Admin credentials настроены в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -1793,7 +1798,162 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
   - Группа `GrafanaEditors` получает роль `Editor`
   - Остальные пользователи получают роль `Viewer`
 
-### 13. Установка Jaeger
+### 13. Установка Loki (централизованное хранение логов)
+
+Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
+
+**Важно:** 
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 12), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
+- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 14) и перед настройкой Fluent Bit в dev кластере (раздел 7), так как Fluent Bit будет отправлять логи в Loki.
+
+#### 13.1. Установка Loki через Helm
+
+Loki устанавливается через Helm chart в services кластере:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Добавить Helm репозиторий Grafana
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# 2. Создать namespace для Loki (если еще не создан)
+kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить Loki
+helm upgrade --install loki grafana/loki \
+  --namespace logging \
+  --create-namespace \
+  -f helm/services/loki/loki-values.yaml
+
+# 4. Проверить установку Loki
+kubectl get pods -n logging -l app.kubernetes.io/name=loki
+kubectl get services -n logging -l app.kubernetes.io/name=loki
+
+# 5. Дождаться готовности Loki
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=loki -n logging --timeout=300s
+```
+
+**Важно:**
+- Loki использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища (50Gi по умолчанию)
+- Конфигурация Loki находится в `helm/services/loki/loki-values.yaml`
+- Loki использует файловую систему для хранения (filesystem storage type)
+- Период хранения логов: 720 часов (30 дней) по умолчанию
+- Chart версия: `6.21.0` (указана в `helm/services/loki/loki-values.yaml` или можно указать через `--version`)
+
+#### 13.2. Получение внешнего IP адреса LoadBalancer Service
+
+После установки Loki через Helm chart автоматически создается LoadBalancer Service для gateway. Получите внешний IP адрес:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Дождаться получения внешнего IP адреса LoadBalancer Service
+kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' svc loki-gateway -n logging --timeout=300s
+
+# Получить внешний IP адрес Loki
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Loki доступен по адресу: $LOKI_EXTERNAL_IP:3100"
+```
+
+**Важно:**
+- LoadBalancer Service создается автоматически при установке Loki через Helm chart (настроено в `helm/services/loki/loki-values.yaml`)
+- Имя сервиса: `loki-gateway` (если release name = `loki`)
+- Запишите внешний IP адрес Loki - он понадобится для настройки Fluent Bit в dev кластере
+- Убедитесь, что firewall разрешает подключения к порту 3100 с IP адресов dev кластера
+- Для production рекомендуется использовать VPN или приватную сеть вместо публичного LoadBalancer
+
+#### 13.3. Проверка доступности Loki
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Получить внешний IP адрес Loki
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Проверить доступность Loki через HTTP API
+curl -v http://$LOKI_EXTERNAL_IP:3100/ready
+
+# Проверить метрики Loki
+curl http://$LOKI_EXTERNAL_IP:3100/metrics | head -20
+```
+
+**Важно:**
+- Endpoint `/ready` должен вернуть статус `200 OK`
+- Если Loki недоступен, проверьте:
+  - Статус подов Loki: `kubectl get pods -n logging -l app.kubernetes.io/name=loki`
+  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
+  - Статус LoadBalancer Service: `kubectl describe svc loki-gateway -n logging`
+
+### 14. Установка Fluent Bit (сбор логов) в services кластере
+
+Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла services кластера, отправляя их в Loki.
+
+**Важно:**
+- Loki должен быть развернут перед установкой Fluent Bit (см. раздел 13)
+- Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
+- Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
+
+#### 14.1. Установка Fluent Bit через Helm
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Добавить Helm репозиторий Fluent
+helm repo add fluent https://fluent.github.io/helm-charts
+helm repo update
+
+# 2. Создать namespace для Fluent Bit (если еще не создан)
+kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить Fluent Bit
+helm upgrade --install fluent-bit fluent/fluent-bit \
+  --namespace logging \
+  --create-namespace \
+  -f helm/services/fluent-bit/fluent-bit-values.yaml
+
+# 4. Проверить установку
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
+kubectl get daemonset -n logging fluent-bit
+
+# 5. Дождаться готовности Fluent Bit
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fluent-bit -n logging --timeout=300s
+```
+
+#### 14.2. Проверка установки Fluent Bit
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Проверить установку Fluent Bit
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
+kubectl get daemonset -n logging fluent-bit
+
+# 2. Проверить, что Fluent Bit запущен на всех узлах
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit -o wide
+
+# 3. Посмотреть логи Fluent Bit (должны быть записи о запуске и отправке логов в Loki)
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=100
+
+# 4. Проверить, что Fluent Bit успешно отправляет логи в Loki
+# В логах не должно быть ошибок подключения к Loki
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|error\|failed"
+```
+
+**Важно:**
+- Fluent Bit разворачивается как DaemonSet, по одному поду на каждом узле services кластера
+- Логи отправляются в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (ClusterIP)
+- Если Fluent Bit не может подключиться к Loki, проверьте:
+  - Доступность Loki: `kubectl get svc loki-gateway -n logging`
+  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
+  - Логи Fluent Bit: `kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=50`
+
+### 15. Установка Jaeger
 
 ```bash
 # 1. Добавить Helm репозиторий Jaeger
@@ -1825,7 +1985,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 **Подробная документация:**
 - См. конфигурацию в `helm/services/jaeger/jaeger-values.yaml`
 
-### 14. Создание HTTPRoute для приложений
+### 16. Создание HTTPRoute для приложений
 
 **Важно:** HTTPRoute должны создаваться ПОСЛЕ установки приложений, так как они ссылаются на сервисы Argo CD и Jenkins.
 
@@ -1863,18 +2023,31 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 
 **Важно:** Dev кластер должен быть развернут после настройки Services кластера, так как он использует Vault из Services кластера для хранения секретов.
 
-**GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **external-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере:
+**GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **external-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
 
+**Важно:** Перед применением Application необходимо создать AppProject для организации Application:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Применить AppProject (должны быть созданы до Application)
+kubectl apply -f manifests/services/argocd/appprojects/
+
+# 2. Применить Application для инфраструктурных сервисов
+kubectl apply -f manifests/services/argocd/applications/dev/
+```
+
+**AppProject:**
+- `manifests/services/argocd/appprojects/dev-infrastructure-project.yaml` — для инфраструктурных сервисов
+- `manifests/services/argocd/appprojects/dev-microservices-project.yaml` — для микросервисов
+
+**Application для инфраструктурных сервисов:**
 - `manifests/services/argocd/applications/dev/application-cert-manager.yaml`
 - `manifests/services/argocd/applications/dev/application-external-secrets.yaml`
 - `manifests/services/argocd/applications/dev/application-fluent-bit.yaml`
 
-Применение (в **services** кластере):
-
-```bash
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-kubectl apply -f manifests/services/argocd/applications/dev/
-```
+Подробнее о AppProject см. раздел "Создание AppProject для организации Application".
 
 ### Шаг 1: Развертывание кластера через Terraform
 
@@ -2241,32 +2414,84 @@ kubectl describe clustersecretstore vault
 
 ### Шаг 7: Установка Fluent Bit (сбор логов) в dev кластере
 
-Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера.
+Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
 
 **Важно:**
-- В текущей конфигурации вывод логов настроен в **stdout** (для проверки). При необходимости измените `config.outputs` в `helm/dev/fluent-bit/fluent-bit-values.yaml` и направьте логи в Loki/Elasticsearch/другой backend.
+- Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
+- Fluent Bit настроен для отправки логов в Loki через HTTP API
+- Необходимо обновить конфигурацию Fluent Bit с внешним IP адресом Loki перед установкой
+
+#### 7.1. Настройка Fluent Bit для отправки логов в Loki
+
+Перед установкой Fluent Bit необходимо обновить конфигурацию с внешним IP адресом Loki:
+
+```bash
+# 1. Переключиться на services кластер и получить внешний IP адрес Loki
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-external -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Внешний IP адрес Loki: $LOKI_EXTERNAL_IP"
+
+# 2. Обновить конфигурацию Fluent Bit с IP адресом Loki
+# Заменить <LOKI_EXTERNAL_IP> на реальный IP адрес в файле helm/dev/fluent-bit/fluent-bit-values.yaml
+# Или использовать sed для автоматической замены:
+sed -i "s/<LOKI_EXTERNAL_IP>/$LOKI_EXTERNAL_IP/g" helm/dev/fluent-bit/fluent-bit-values.yaml
+
+# 3. Проверить, что IP адрес заменен
+grep -A 2 "Host.*$LOKI_EXTERNAL_IP" helm/dev/fluent-bit/fluent-bit-values.yaml
+```
+
+**Важно:**
+- Замените `<LOKI_EXTERNAL_IP>` на реальный внешний IP адрес LoadBalancer Service `loki-gateway` из services кластера
+- IP адрес можно получить командой: `kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
+- Если LoadBalancer еще не получил IP адрес, дождитесь его назначения перед настройкой Fluent Bit
+
+#### 7.2. Развертывание Fluent Bit через Argo CD Application
+
+Fluent Bit разворачивается через Argo CD Application в services кластере:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Применить Argo CD Application для Fluent Bit
+kubectl apply -f manifests/services/argocd/applications/dev/application-fluent-bit.yaml
+
+# 2. Проверить статус Application в Argo CD
+kubectl get application fluent-bit-dev -n argocd
+kubectl describe application fluent-bit-dev -n argocd
+
+# 3. Дождаться синхронизации (Application должна быть в статусе Synced)
+kubectl wait --for=condition=Synced application fluent-bit-dev -n argocd --timeout=300s
+```
+
+#### 7.3. Проверка установки Fluent Bit
 
 ```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Добавить Helm репозиторий Fluent
-helm repo add fluent https://fluent.github.io/helm-charts
-helm repo update
-
-# Установить Fluent Bit в namespace logging
-helm upgrade --install fluent-bit fluent/fluent-bit \
-  --namespace logging \
-  --create-namespace \
-  -f helm/dev/fluent-bit/fluent-bit-values.yaml
-
-# Проверить установку
+# 1. Проверить установку Fluent Bit
 kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
 kubectl get daemonset -n logging fluent-bit
 
-# Посмотреть логи Fluent Bit (должны быть записи о запуске и сборе логов)
+# 2. Проверить, что Fluent Bit запущен на всех узлах
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit -o wide
+
+# 3. Посмотреть логи Fluent Bit (должны быть записи о запуске и отправке логов в Loki)
 kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=100
+
+# 4. Проверить, что Fluent Bit успешно отправляет логи в Loki
+# В логах не должно быть ошибок подключения к Loki
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|error\|failed"
 ```
+
+**Важно:**
+- Fluent Bit разворачивается как DaemonSet, по одному поду на каждом узле dev кластера
+- Логи отправляются в Loki через HTTP API на порт 3100
+- Если Fluent Bit не может подключиться к Loki, проверьте:
+  - Внешний IP адрес Loki в конфигурации Fluent Bit
+  - Доступность Loki из dev кластера: `curl http://<LOKI_EXTERNAL_IP>:3100/ready`
+  - Firewall правила для порта 3100
 
 ### Создание базовых Namespaces
 
@@ -2681,12 +2906,54 @@ kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.config}' | base64 -
 kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "dev-cluster\|unmarshal\|cluster secret"
 ```
 
+### Создание AppProject для организации Application
+
+AppProject в Argo CD используются для организации Application и управления доступом к ресурсам. В инфраструктуре настроены два проекта:
+
+1. **`dev-infrastructure`** — для инфраструктурных сервисов dev кластера (cert-manager, external-secrets, fluent-bit и т.д.)
+2. **`dev-microservices`** — для микросервисов dev кластера (donweather-ms-weather, donweather-front и т.д.)
+
+**Применение AppProject:**
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить AppProject
+kubectl apply -f manifests/services/argocd/appprojects/
+
+# Проверить создание проектов
+kubectl get appproject -n argocd
+
+# Проверить детали проектов
+kubectl describe appproject dev-infrastructure -n argocd
+kubectl describe appproject dev-microservices -n argocd
+```
+
+**Описание проектов:**
+
+- **`dev-infrastructure`**: 
+  - Разрешает репозитории: Helm charts (jetstack, external-secrets, fluent) и DonInfrastructure
+  - Разрешает namespaces: `cert-manager`, `external-secrets-system`, `logging` в dev кластере
+  - Роли: `infrastructure-admin` (группа `InfrastructureAdmins`), `infrastructure-operator` (группа `InfrastructureOperators`)
+
+- **`dev-microservices`**:
+  - Разрешает репозитории: DonWeather-* репозитории и DonInfrastructure
+  - Разрешает namespaces: `donweather` и все остальные в dev кластере
+  - Роли: `microservices-admin` (группа `MicroservicesAdmins`), `developer` (группа `Developers`), `operator` (группа `Operators`)
+
+**Важно:**
+- AppProject должны быть созданы **до** создания Application
+- Все Application автоматически используют соответствующий проект (указан в поле `spec.project`)
+- RBAC роли привязаны к группам из Keycloak (нужно создать соответствующие группы в Keycloak)
+
 ### Создание Argo CD Application для развертывания приложений
 
-После добавления dev кластера в Argo CD можно создавать Application для развертывания приложений в dev кластере.
+После добавления dev кластера в Argo CD и создания AppProject можно создавать Application для развертывания приложений в dev кластере.
 
 **Важно:** Перед созданием Application убедитесь, что:
 - Dev кластер добавлен в Argo CD и имеет статус "Connected"
+- AppProject созданы (`dev-infrastructure` и `dev-microservices`)
 - Git репозиторий с Helm chart приложения доступен
 - Docker Registry credentials настроены в dev кластере (если используются приватные образы)
 
@@ -2703,7 +2970,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
+  project: dev-microservices
   
   source:
     repoURL: https://github.com/opusdvs/DonWeather-ms-weather.git
@@ -3032,6 +3299,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
    - **External Secrets Operator должен быть установлен после Vault** (для синхронизации секретов)
    - **ClusterSecretStore должен быть настроен после External Secrets Operator** (для подключения к Vault)
    - **PostgreSQL должен быть установлен перед Keycloak** (Keycloak использует PostgreSQL в качестве базы данных)
+   - **Loki должен быть установлен перед Prometheus Kube Stack** (Loki настроен как источник данных в Grafana через `additionalDataSources`)
    - Gateway должен быть создан перед ClusterIssuer (ClusterIssuer ссылается на Gateway для HTTP-01 challenge)
    - Приложения должны быть установлены перед созданием HTTPRoute (HTTPRoute ссылаются на их сервисы)
    - Secret для TLS создается cert-manager автоматически, но HTTPS listener не будет работать до его создания
@@ -3046,6 +3314,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
    - **PostgreSQL** → требует **секреты через External Secrets Operator** (для паролей администратора и репликации)
    - **Приложения** → требуют **секреты через External Secrets Operator** (Keycloak, Grafana и т.д.)
    - **Keycloak** → требует **PostgreSQL** (в качестве базы данных)
+   - **Prometheus Kube Stack (Grafana)** → требует **Loki** (Loki настроен как источник данных в Grafana)
    - **ClusterIssuer** → требует **Gateway** (для HTTP-01 challenge через Gateway API)
    - **Certificate** → требует **ClusterIssuer** и **Gateway** (для HTTP-01 challenge)
    - **HTTPRoute** → требует **Gateway** и **сервисы приложений** (backendRefs ссылаются на сервисы)

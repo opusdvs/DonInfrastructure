@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev-infrastructure
+  namespace: argocd
+  # Финализатор для предотвращения случайного удаления
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Проект для инфраструктурных сервисов в dev кластере (cert-manager, external-secrets, fluent-bit и т.д.). Все Application в этом проекте развертываются в dev кластер.
+
+  # Разрешенные источники (репозитории)
+  sourceRepos:
+    # Helm репозитории для инфраструктурных компонентов
+    - 'https://charts.jetstack.io'
+    - 'https://charts.external-secrets.io'
+    - 'https://fluent.github.io/helm-charts'
+    # Репозиторий с конфигурацией инфраструктуры (values для Helm charts)
+    - 'https://github.com/opusdvs/DonInfrastructure.git'
+    # Разрешить все репозитории (опционально, для гибкости)
+    # - '*'
+
+  # Разрешенные кластеры
+  destinations:
+    # Dev кластер для инфраструктурных сервисов (по имени кластера, добавленного в Argo CD)
+    - namespace: 'cert-manager'
+      name: 'dev-cluster'
+    - namespace: 'external-secrets-system'
+      name: 'dev-cluster'
+    - namespace: 'logging'
+      name: 'dev-cluster'
+    # Разрешить все namespaces в dev кластере (для гибкости при добавлении новых инфраструктурных сервисов)
+    - namespace: '*'
+      name: 'dev-cluster'
+
+  # Разрешенные типы ресурсов
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+
+  # Разрешенные namespace ресурсы
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+
+  # Роли и права доступа (опционально)
+  roles:
+    # Роль для администраторов инфраструктуры
+    - name: infrastructure-admin
+      description: Полный доступ к инфраструктурным сервисам
+      policies:
+        - p, proj:dev-infrastructure:infrastructure-admin, applications, *, dev-infrastructure/*, allow
+        - p, proj:dev-infrastructure:infrastructure-admin, repositories, get, dev-infrastructure/*, allow
+        - p, proj:dev-infrastructure:infrastructure-admin, repositories, create, dev-infrastructure/*, allow
+        - p, proj:dev-infrastructure:infrastructure-admin, repositories, update, dev-infrastructure/*, allow
+        - p, proj:dev-infrastructure:infrastructure-admin, repositories, delete, dev-infrastructure/*, allow
+      groups:
+        - InfrastructureAdmins
+
+    # Роль для операторов инфраструктуры (только синхронизация)
+    - name: infrastructure-operator
+      description: Доступ на синхронизацию инфраструктурных сервисов
+      policies:
+        - p, proj:dev-infrastructure:infrastructure-operator, applications, sync, dev-infrastructure/*, allow
+        - p, proj:dev-infrastructure:infrastructure-operator, applications, get, dev-infrastructure/*, allow
+      groups:
+        - InfrastructureOperators
