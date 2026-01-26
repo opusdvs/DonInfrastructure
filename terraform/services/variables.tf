@@ -36,7 +36,7 @@ variable "node_group_name" {
 variable "node_group_node_count" {
   type        = number
   description = "Node group node count"
-  default     = 3
+  default     = 5
 }
 
 variable "home_dir" {
@@ -48,5 +48,11 @@ variable "home_dir" {
 variable "node_group_cpu" {
   type        = number
   description = "CPU"
-  default     = 4
+  default     = 2
+}
+
+variable "enable_twc_k8s" {
+  type        = bool
+  description = "Enable TWC K8s"
+  default     = true
 }
