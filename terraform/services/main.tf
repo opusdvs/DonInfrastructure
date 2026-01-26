@@ -17,3 +17,8 @@ module "twc_k8s" {
   node_group_preset_id = data.twc_k8s_preset.k8s-preset-node.id
   node_group_node_count = var.node_group_node_count
 }
+
+resource "local_file" "kubeconfig" {
+  content = module.twc_k8s[0].kubeconfig
+  filename = "kubeconfig_${var.cluster_name}.yaml"
+}
