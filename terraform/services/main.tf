@@ -1,22 +1,24 @@
-resource "twc_k8s_cluster" "k8s-cluster" {
-  name           = var.cluster_name
-  description    = var.cluster_description
-  network_driver = var.cluster_network_driver
-  version        = var.cluster_version
-
-  preset_id  = data.twc_k8s_preset.k8s-preset-master.id
-  project_id = data.twc_projects.services.id
+locals {
+  enable_twc_k8s = var.enable_twc_k8s ? 1 : 0
 }
 
-resource "twc_k8s_node_group" "k8s-cluster-node-group" {
-  count = length(var.node_group_name)
-  cluster_id = twc_k8s_cluster.k8s-cluster.id
-  name       = var.node_group_name[count.index]
-  preset_id  = data.twc_k8s_preset.k8s-preset-node.id
-  node_count = var.node_group_node_count
+module "twc_k8s" {
+  count = local.enable_twc_k8s
+  source = "../module/twc/twc_k8s"
+  cluster_name = var.cluster_name
+  cluster_description = var.cluster_description
+  cluster_network_driver = var.cluster_network_driver
+  cluster_version = var.cluster_version
+  node_group_name = var.node_group_name
+  network_driver = var.cluster_network_driver
+  cluster_preset_id = data.twc_k8s_preset.k8s-preset-master.id
+  project_id = data.twc_projects.services.id
+  node_group_cpu = var.node_group_cpu
+  node_group_preset_id = data.twc_k8s_preset.k8s-preset-node.id
+  node_group_node_count = var.node_group_node_count
 }
 
 resource "local_file" "kubeconfig" {
-  content  = twc_k8s_cluster.k8s-cluster.kubeconfig
-  filename = "${var.home_dir}/kubeconfig-${twc_k8s_cluster.k8s-cluster.name}.yaml"
+  content = module.twc_k8s[0].kubeconfig
+  filename = "kubeconfig_${var.cluster_name}.yaml"
 }
