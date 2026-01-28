@@ -296,7 +296,6 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-operator 
 - Оператор автоматически создает необходимые CRD при установке
 - После установки оператора можно создавать Vault инстансы через Custom Resource
 - Vault Secrets Operator от HashiCorp (`vault-secrets-operator`) используется только для синхронизации секретов из Vault, а не для управления Vault инстансами
-- Vault Secrets Operator от HashiCorp (`vault-secrets-operator`) используется только для синхронизации секретов из Vault, а не для управления Vault инстансами
 
 #### 4.2. Создание Vault инстанса через CRD
 
