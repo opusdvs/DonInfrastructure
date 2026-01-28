@@ -1,0 +1,49 @@
+apiVersion: vault.banzaicloud.com/v1alpha1
+kind: Vault
+metadata:
+  name: vault
+  namespace: vault
+spec:
+  size: 1
+
+  image: hashicorp/vault:1.15.5
+
+  serviceType: ClusterIP
+
+  serviceAccount: vault
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        storageClassName: nvme.network-drives.csi.timeweb.cloud
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+
+  volumeMounts:
+    - name: data
+      mountPath: /vault/data
+
+  unsealConfig:
+    options:
+      preFlightChecks: true
+      storeRootToken: true
+      secretShares: 5
+      secretThreshold: 3
+    kubernetes:
+      secretNamespace: vault
+
+  config:
+    ui: false
+
+    listener:
+      tcp:
+        address: "0.0.0.0:8200"
+        tls_disable: true
+
+    storage:
+      file:
+        path: /vault/data

@@ -271,27 +271,32 @@ kubectl get storageclass | grep network-drives
 
 **Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через External Secrets Operator.
 
-Vault устанавливается через Vault Operator, который управляет жизненным циклом Vault инстансов через Custom Resource Definitions (CRD).
+Vault устанавливается через Vault Operator (Bank-Vaults), который управляет жизненным циклом Vault инстансов через Custom Resource Definitions (CRD).
 
 #### 4.1. Установка Vault Operator
 
-```bash
-# 1. Добавить Helm репозиторий HashiCorp
-helm repo add hashicorp https://helm.releases.hashicorp.com
-helm repo update
+Для управления Vault инстансами через CRD используется Bank-Vaults Vault Operator:
 
-# 2. Установить Vault Operator
-helm upgrade --install vault-operator hashicorp/vault-operator \
+```bash
+# 1. Установить Bank-Vaults Vault Operator через OCI registry
+helm upgrade --install --wait vault-operator oci://ghcr.io/bank-vaults/helm-charts/vault-operator \
   --namespace vault-system \
   --create-namespace
 
-# 3. Проверить установку оператора
+# 2. Проверить установку оператора и CRD
 kubectl get pods -n vault-system
-kubectl get crd | grep vault
+kubectl get crd | grep vault.banzaicloud.com
 
-# 4. Дождаться готовности Vault Operator
+# 3. Дождаться готовности Vault Operator
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-operator -n vault-system --timeout=300s
 ```
+
+**Важно:**
+- Bank-Vaults Vault Operator управляет жизненным циклом Vault инстансов через CRD `vault.banzaicloud.com/v1alpha1`
+- Оператор автоматически создает необходимые CRD при установке
+- После установки оператора можно создавать Vault инстансы через Custom Resource
+- Vault Secrets Operator от HashiCorp (`vault-secrets-operator`) используется только для синхронизации секретов из Vault, а не для управления Vault инстансами
+- Vault Secrets Operator от HashiCorp (`vault-secrets-operator`) используется только для синхронизации секретов из Vault, а не для управления Vault инстансами
 
 #### 4.2. Создание Vault инстанса через CRD
 
@@ -301,27 +306,37 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-operator 
 # 1. Создать namespace для Vault (если еще не создан)
 kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
 
-# 2. Применить манифест Vault инстанса
-# Создайте манифест Vault CRD или используйте пример из документации
-# Пример: kubectl apply -f manifests/services/vault/vault-instance.yaml
+# 2. Создать ServiceAccount для Vault (требуется для работы Vault Operator)
+kubectl create serviceaccount vault -n vault --dry-run=client -o yaml | kubectl apply -f -
 
-# 3. Проверить создание Vault инстанса
+# 3. Создать ClusterRoleBinding для Vault ServiceAccount (для unsealing через Kubernetes)
+kubectl create clusterrolebinding vault-auth-delegator \
+  --clusterrole=system:auth-delegator \
+  --serviceaccount=vault:vault \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# 4. Применить манифест Vault инстанса
+kubectl apply -f manifests/services/vault/vault-instance.yaml
+
+# 5. Проверить создание Vault инстанса
 kubectl get vault -n vault
-kubectl describe vault <vault-instance-name> -n vault
+kubectl describe vault vault -n vault
 
-# 4. Проверить поды Vault
+# 6. Проверить поды Vault
 kubectl get pods -n vault
 
-# 5. Дождаться готовности Vault
+# 7. Дождаться готовности Vault
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault --timeout=600s
 ```
 
 **Важно:**
 - Vault Operator управляет жизненным циклом Vault инстансов через CRD
 - Vault инстанс создается через Custom Resource `Vault` в namespace `vault`
+- ServiceAccount `vault` должен быть создан перед применением манифеста Vault инстанса
+- ClusterRoleBinding `vault-auth-delegator` необходим для Kubernetes unsealing
 - Vault Operator автоматически создает StatefulSet, Service и другие необходимые ресурсы
 - StorageClass должен быть `nvme.network-drives.csi.timeweb.cloud`
-- Vault Agent Injector включен для инъекции секретов в поды
+- Vault Operator автоматически выполняет unsealing через Kubernetes Secret (unseal keys хранятся в Secret в namespace `vault`)
 
 **Инициализация и разблокировка Vault:**
 ```bash
