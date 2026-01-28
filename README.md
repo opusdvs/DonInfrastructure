@@ -267,33 +267,59 @@ kubectl get storageclass | grep network-drives
 
 **Примечание:** Установка через панель Timeweb Cloud может отличаться. Следуйте инструкциям в документации Timeweb Cloud для установки CSI драйвера через веб-интерфейс.
 
-### 4. Установка Vault
+### 4. Установка Vault через Vault Operator
 
 **Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через External Secrets Operator.
+
+Vault устанавливается через Vault Operator, который управляет жизненным циклом Vault инстансов через Custom Resource Definitions (CRD).
+
+#### 4.1. Установка Vault Operator
 
 ```bash
 # 1. Добавить Helm репозиторий HashiCorp
 helm repo add hashicorp https://helm.releases.hashicorp.com
 helm repo update
 
-# 2. Установить Vault
-helm upgrade --install vault hashicorp/vault \
-  --namespace vault \
-  --create-namespace \
-  -f helm/services/vault/vault-values.yaml
+# 2. Установить Vault Operator
+helm upgrade --install vault-operator hashicorp/vault-operator \
+  --namespace vault-system \
+  --create-namespace
 
-# 3. Проверить установку
+# 3. Проверить установку оператора
+kubectl get pods -n vault-system
+kubectl get crd | grep vault
+
+# 4. Дождаться готовности Vault Operator
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-operator -n vault-system --timeout=300s
+```
+
+#### 4.2. Создание Vault инстанса через CRD
+
+После установки Vault Operator создайте Vault инстанс через Custom Resource:
+
+```bash
+# 1. Создать namespace для Vault (если еще не создан)
+kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Применить манифест Vault инстанса
+# Создайте манифест Vault CRD или используйте пример из документации
+# Пример: kubectl apply -f manifests/services/vault/vault-instance.yaml
+
+# 3. Проверить создание Vault инстанса
+kubectl get vault -n vault
+kubectl describe vault <vault-instance-name> -n vault
+
+# 4. Проверить поды Vault
 kubectl get pods -n vault
-kubectl get statefulset -n vault
 
-# 4. Дождаться готовности Vault
+# 5. Дождаться готовности Vault
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault --timeout=600s
 ```
 
 **Важно:**
-- **ВНИМАНИЕ: Текущая конфигурация - это временный тестовый режим (standalone) для разработки!**
-- Vault использует file storage backend в standalone режиме (настроен в `helm/services/vault/vault-values.yaml`)
-- В продакшене будет настроен полноценный HA кластер с Raft storage и 3 репликами
+- Vault Operator управляет жизненным циклом Vault инстансов через CRD
+- Vault инстанс создается через Custom Resource `Vault` в namespace `vault`
+- Vault Operator автоматически создает StatefulSet, Service и другие необходимые ресурсы
 - StorageClass должен быть `nvme.network-drives.csi.timeweb.cloud`
 - Vault Agent Injector включен для инъекции секретов в поды
 
