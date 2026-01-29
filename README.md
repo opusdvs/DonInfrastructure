@@ -351,7 +351,8 @@ helm repo update
 helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
   --version 0.10.0 \
   --namespace vault-secrets-operator \
-  --create-namespace
+  --create-namespace \
+  -f helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n vault-secrets-operator
@@ -448,11 +449,9 @@ vault read auth/kubernetes/role/vault-secrets-operator
 "
 ```
 
-#### 5.2. Создание VaultConnection и VaultAuth
+#### 5.2. Проверка VaultConnection и VaultAuth
 
-После настройки Kubernetes auth в Vault создайте VaultConnection и VaultAuth:
-
-**Важно:** Перед созданием VaultAuth убедитесь, что Vault Secrets Operator установлен и CRD созданы!
+При установке Vault Secrets Operator с values файлом `helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml`, default VaultConnection и VaultAuth создаются автоматически.
 
 ```bash
 # 1. Проверить, что Vault Secrets Operator установлен
@@ -468,45 +467,44 @@ kubectl get crd | grep secrets.hashicorp.com
 # - vaultdynamicsecrets.secrets.hashicorp.com
 # - vaultpkisecrets.secrets.hashicorp.com
 
-# 3. Создать VaultConnection (подключение к Vault)
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultConnection
-metadata:
-  name: vault-connection
-  namespace: vault-secrets-operator
-spec:
-  address: http://vault.vault.svc.cluster.local:8200
-  skipTLSVerify: true
-EOF
+# 3. Проверить default VaultConnection (создан автоматически Helm chart'ом)
+kubectl get vaultconnection -n vault-secrets-operator
+kubectl describe vaultconnection default -n vault-secrets-operator
 
-# 4. Создать VaultAuth (аутентификация в Vault)
+# 4. Проверить default VaultAuth (создан автоматически Helm chart'ом)
+kubectl get vaultauth -n vault-secrets-operator
+kubectl describe vaultauth default -n vault-secrets-operator
+
+# 5. Проверить статус (должен быть Valid: true)
+kubectl get vaultauth default -n vault-secrets-operator -o jsonpath='{.status.valid}' && echo
+```
+
+**Примечание:** Если вам нужно создать дополнительные VaultConnection или VaultAuth (например, для других namespace), используйте следующие команды:
+
+```bash
+# Создать дополнительный VaultAuth в другом namespace (опционально)
 cat <<EOF | kubectl apply -f -
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultAuth
 metadata:
   name: vault-auth
-  namespace: vault-secrets-operator
+  namespace: <NAMESPACE>
 spec:
-  vaultConnectionRef: vault-connection
+  vaultConnectionRef: vault-secrets-operator/default
   method: kubernetes
   mount: kubernetes
   kubernetes:
     role: vault-secrets-operator
     serviceAccount: default
 EOF
-
-# 5. Проверить VaultConnection и VaultAuth
-kubectl get vaultconnection -n vault-secrets-operator
-kubectl get vaultauth -n vault-secrets-operator
-kubectl describe vaultauth vault-auth -n vault-secrets-operator
 ```
 
 **Важно:**
-- **Vault должен быть разблокирован (unsealed)** перед созданием VaultAuth
-- Vault Secrets Operator должен быть установлен ПЕРЕД созданием VaultConnection и VaultAuth (см. раздел 5)
-- Kubernetes auth в Vault должен быть настроен перед созданием VaultAuth (см. раздел 5.1)
-- Роль в Vault должна иметь доступ к путям секретов, которые будут использоваться
+- **Vault должен быть разблокирован (unsealed)** перед использованием VaultAuth
+- Kubernetes auth в Vault должен быть настроен перед использованием VaultAuth (см. раздел 5.1)
+- Роль `vault-secrets-operator` в Vault должна иметь доступ к путям секретов, которые будут использоваться
+- Default VaultConnection использует адрес `http://vault.vault.svc.cluster.local:8200`
+- Default VaultAuth разрешает использование из всех namespace (`allowedNamespaces: ["*"]`)
 - После настройки VaultAuth можно создавать VaultStaticSecret ресурсы для синхронизации секретов
 
 #### 5.3. Пример использования VaultStaticSecret
@@ -521,7 +519,7 @@ metadata:
   name: my-secret
   namespace: default
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: myapp/config
@@ -631,7 +629,7 @@ metadata:
   name: postgresql-admin-credentials
   namespace: postgresql
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: postgresql/admin
@@ -805,7 +803,7 @@ metadata:
   name: postgresql-keycloak-credentials
   namespace: keycloak
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: keycloak/postgresql
@@ -823,7 +821,7 @@ metadata:
   name: keycloak-admin-credentials
   namespace: keycloak
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: keycloak/admin
@@ -991,7 +989,7 @@ metadata:
   name: argocd-admin-credentials
   namespace: argocd
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: argocd/admin
@@ -1009,7 +1007,7 @@ metadata:
   name: jenkins-admin-credentials
   namespace: jenkins
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: jenkins/admin
@@ -1028,7 +1026,7 @@ metadata:
   name: grafana-admin-credentials
   namespace: kube-prometheus-stack
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: grafana/admin
@@ -1155,7 +1153,7 @@ metadata:
   name: argocd-oidc-secret
   namespace: argocd
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: argocd/oidc
@@ -1299,7 +1297,7 @@ metadata:
   name: jenkins-github-token
   namespace: jenkins
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: jenkins/github
@@ -1399,7 +1397,7 @@ metadata:
   name: jenkins-docker-registry
   namespace: jenkins
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: jenkins/docker-registry
@@ -1589,7 +1587,7 @@ metadata:
     app: docker-registry
     component: credentials
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: kubernetes/docker-registry
@@ -1805,7 +1803,7 @@ metadata:
   name: grafana-admin-credentials
   namespace: kube-prometheus-stack
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: grafana/admin
@@ -1933,7 +1931,7 @@ metadata:
   name: grafana-oidc-secret
   namespace: kube-prometheus-stack
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: grafana/oidc
@@ -2448,7 +2446,8 @@ helm repo update
 helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
   --version 0.10.0 \
   --namespace vault-secrets-operator \
-  --create-namespace
+  --create-namespace \
+  -f helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n vault-secrets-operator
@@ -3016,7 +3015,7 @@ metadata:
     app: argocd
     component: cluster-config
 spec:
-  vaultAuthRef: vault-secrets-operator/vault-auth
+  vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
   path: argocd/dev-cluster
