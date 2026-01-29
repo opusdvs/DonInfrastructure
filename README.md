@@ -269,7 +269,7 @@ kubectl get storageclass | grep network-drives
 
 ### 4. Установка Vault через Helm
 
-**Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через External Secrets Operator.
+**Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через Vault Secrets Operator.
 
 Vault устанавливается через официальный Helm chart от HashiCorp.
 
@@ -336,42 +336,46 @@ cat /tmp/vault-root-token.txt
 - После перезапуска Vault потребуется повторное разблокирование (unseal)
 - Для автоматического unsealing в продакшене будет настроен auto-unseal через KMS
 
-### 5. Установка External Secrets Operator
+### 5. Установка Vault Secrets Operator
 
-**Важно:** External Secrets Operator должен быть установлен после Vault, так как он синхронизирует секреты из Vault в Kubernetes Secrets.
+**Важно:** Vault Secrets Operator должен быть установлен после Vault, так как он синхронизирует секреты из Vault в Kubernetes Secrets.
+
+Vault Secrets Operator (VSO) — официальный оператор от HashiCorp для синхронизации секретов из Vault в Kubernetes.
 
 ```bash
-# 1. Добавить Helm репозиторий External Secrets
-helm repo add external-secrets https://charts.external-secrets.io
+# 1. Добавить Helm репозиторий HashiCorp (если еще не добавлен)
+helm repo add hashicorp https://helm.releases.hashicorp.com
 helm repo update
 
-# 2. Установить External Secrets Operator
-helm upgrade --install external-secrets external-secrets/external-secrets \
-  --namespace external-secrets-system \
-  --create-namespace \
-  -f helm/services/external-secrets/external-secrets-values.yaml
+# 2. Установить Vault Secrets Operator
+helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
+  --version 0.10.0 \
+  --namespace vault-secrets-operator \
+  --create-namespace
 
 # 3. Проверить установку
-kubectl get pods -n external-secrets-system
-kubectl get crd | grep external-secrets
+kubectl get pods -n vault-secrets-operator
+kubectl get crd | grep secrets.hashicorp.com
 
-# 4. Дождаться готовности External Secrets Operator
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
+# 4. Дождаться готовности Vault Secrets Operator
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
 ```
 
 **Важно:**
-- External Secrets Operator будет использоваться для синхронизации секретов из Vault в Kubernetes
-- После установки необходимо настроить ClusterSecretStore или SecretStore для подключения к Vault
-- Все секреты в кластере должны создаваться через External Secrets Operator, а не напрямую через `kubectl create secret`
+- Vault Secrets Operator будет использоваться для синхронизации секретов из Vault в Kubernetes
+- После установки необходимо настроить VaultConnection и VaultAuth для подключения к Vault
+- Все секреты в кластере должны создаваться через VaultStaticSecret, а не напрямую через `kubectl create secret`
 
-**Подробная документация:**
-- См. конфигурацию в `helm/services/external-secrets/external-secrets-values.yaml`
+**CRD Vault Secrets Operator:**
+- `VaultConnection` — подключение к Vault серверу
+- `VaultAuth` — аутентификация в Vault (Kubernetes auth, JWT и т.д.)
+- `VaultStaticSecret` — синхронизация статических секретов (KV v1/v2)
+- `VaultDynamicSecret` — динамические секреты (database credentials и т.д.)
+- `VaultPKISecret` — PKI сертификаты
 
-#### 5.1. Настройка Kubernetes Auth в Vault для External Secrets Operator
+#### 5.1. Настройка Kubernetes Auth в Vault для Vault Secrets Operator
 
-Перед настройкой ClusterSecretStore необходимо настроить Kubernetes auth в Vault для External Secrets Operator.
-
-**Подробная инструкция:** [`manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+Перед созданием VaultAuth необходимо настроить Kubernetes auth в Vault.
 
 **Краткая инструкция:**
 
@@ -411,25 +415,28 @@ vault write auth/kubernetes/config \
   disable_iss_validation=true
 "
 
-# 3. Создать политику для External Secrets Operator
+# 3. Создать политику для Vault Secrets Operator
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault policy write external-secrets-policy - <<'EOF'
+vault policy write vault-secrets-operator-policy - <<'EOF'
 path \"secret/data/*\" {
   capabilities = [\"read\"]
+}
+path \"secret/metadata/*\" {
+  capabilities = [\"read\", \"list\"]
 }
 EOF
 "
 
-# 4. Создать роль в Vault для External Secrets Operator
+# 4. Создать роль в Vault для Vault Secrets Operator
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault write auth/kubernetes/role/external-secrets-operator \
-  bound_service_account_names=external-secrets \
-  bound_service_account_namespaces=external-secrets-system \
-  policies=external-secrets-policy \
+vault write auth/kubernetes/role/vault-secrets-operator \
+  bound_service_account_names=default \
+  bound_service_account_namespaces=vault-secrets-operator,default,argocd,jenkins,keycloak,postgresql,kube-prometheus-stack,logging \
+  policies=vault-secrets-operator-policy \
   ttl=1h
 "
 
@@ -437,48 +444,92 @@ vault write auth/kubernetes/role/external-secrets-operator \
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault read auth/kubernetes/role/external-secrets-operator
+vault read auth/kubernetes/role/vault-secrets-operator
 "
 ```
 
-#### 5.2. Настройка ClusterSecretStore для Vault
+#### 5.2. Создание VaultConnection и VaultAuth
 
-После настройки Kubernetes auth в Vault примените ClusterSecretStore:
+После настройки Kubernetes auth в Vault создайте VaultConnection и VaultAuth:
 
-**Важно:** Перед применением ClusterSecretStore убедитесь, что External Secrets Operator установлен и CRD созданы!
+**Важно:** Перед созданием VaultAuth убедитесь, что Vault Secrets Operator установлен и CRD созданы!
 
 ```bash
-# 1. Проверить, что External Secrets Operator установлен
-kubectl get pods -n external-secrets-system
+# 1. Проверить, что Vault Secrets Operator установлен
+kubectl get pods -n vault-secrets-operator
 
 # 2. Проверить, что CRD установлены
-kubectl get crd | grep external-secrets
+kubectl get crd | grep secrets.hashicorp.com
 
 # Должны быть установлены следующие CRD:
-# - clustersecretstores.external-secrets.io
-# - externalsecrets.external-secrets.io
-# - secretstores.external-secrets.io
+# - vaultconnections.secrets.hashicorp.com
+# - vaultauths.secrets.hashicorp.com
+# - vaultstaticsecrets.secrets.hashicorp.com
+# - vaultdynamicsecrets.secrets.hashicorp.com
+# - vaultpkisecrets.secrets.hashicorp.com
 
-# Если CRD не установлены, установите External Secrets Operator (см. раздел 5)
+# 3. Создать VaultConnection (подключение к Vault)
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault-connection
+  namespace: vault-secrets-operator
+spec:
+  address: http://vault.vault.svc.cluster.local:8200
+  skipTLSVerify: true
+EOF
 
-# 3. Дождаться готовности External Secrets Operator (если только что установили)
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
+# 4. Создать VaultAuth (аутентификация в Vault)
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: vault-auth
+  namespace: vault-secrets-operator
+spec:
+  vaultConnectionRef: vault-connection
+  method: kubernetes
+  mount: kubernetes
+  kubernetes:
+    role: vault-secrets-operator
+    serviceAccount: default
+EOF
 
-# 4. Применить ClusterSecretStore
-kubectl apply -f manifests/services/external-secrets/vault-cluster-secret-store.yaml
-
-# 5. Проверить ClusterSecretStore
-kubectl get clustersecretstore
-kubectl describe clustersecretstore vault
+# 5. Проверить VaultConnection и VaultAuth
+kubectl get vaultconnection -n vault-secrets-operator
+kubectl get vaultauth -n vault-secrets-operator
+kubectl describe vaultauth vault-auth -n vault-secrets-operator
 ```
 
 **Важно:**
-- **Vault должен быть разблокирован (unsealed)** перед применением ClusterSecretStore
-- External Secrets Operator должен быть установлен ПЕРЕД применением ClusterSecretStore (см. раздел 5)
-- Kubernetes auth в Vault должен быть настроен перед созданием ClusterSecretStore (см. раздел 5.1)
-- ServiceAccount `external-secrets` должен существовать в namespace `external-secrets-system` (создается автоматически при установке)
+- **Vault должен быть разблокирован (unsealed)** перед созданием VaultAuth
+- Vault Secrets Operator должен быть установлен ПЕРЕД созданием VaultConnection и VaultAuth (см. раздел 5)
+- Kubernetes auth в Vault должен быть настроен перед созданием VaultAuth (см. раздел 5.1)
 - Роль в Vault должна иметь доступ к путям секретов, которые будут использоваться
-- После настройки ClusterSecretStore можно создавать ExternalSecret ресурсы для синхронизации секретов
+- После настройки VaultAuth можно создавать VaultStaticSecret ресурсы для синхронизации секретов
+
+#### 5.3. Пример использования VaultStaticSecret
+
+После настройки VaultAuth можно создавать VaultStaticSecret для синхронизации секретов:
+
+```yaml
+# Пример VaultStaticSecret для синхронизации секрета из Vault
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: my-secret
+  namespace: default
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: myapp/config
+  refreshAfter: 60s
+  destination:
+    name: my-secret
+    create: true
+```
 
 **Проверка статуса Vault:**
 ```bash
@@ -564,20 +615,35 @@ vault kv put secret/keycloak/admin \
 - Пароли должны быть достаточно длинными (минимум 16 символов)
 - Сохраните пароли в безопасном месте (например, в менеджере паролей)
 
-#### 6.2. Создание ExternalSecret для PostgreSQL
+#### 6.2. Создание VaultStaticSecret для PostgreSQL
 
-Создайте ExternalSecret для синхронизации секретов из Vault:
+Создайте VaultStaticSecret для синхронизации секретов из Vault:
 
 ```bash
 # Создать namespace для PostgreSQL (если еще не создан)
 kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
 
-# Применить ExternalSecret манифест для PostgreSQL admin credentials
-kubectl apply -f manifests/services/postgresql/postgresql-admin-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для PostgreSQL admin credentials
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: postgresql-admin-credentials
+  namespace: postgresql
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: postgresql/admin
+  refreshAfter: 60s
+  destination:
+    name: postgresql-admin-credentials
+    create: true
+EOF
 
 # Проверить синхронизацию секретов
-kubectl get externalsecret -n postgresql
-kubectl describe externalsecret postgresql-admin-credentials -n postgresql
+kubectl get vaultstaticsecret -n postgresql
+kubectl describe vaultstaticsecret postgresql-admin-credentials -n postgresql
 
 # Проверить созданный Secret
 kubectl get secret postgresql-admin-credentials -n postgresql
@@ -609,7 +675,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n p
 **Важно:**
 - PostgreSQL использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
 - Размер хранилища по умолчанию: 8Gi (можно изменить в `helm/services/postgresql/postgresql-values.yaml`)
-- Secret `postgresql-admin-credentials` должен быть создан через External Secrets Operator перед установкой
+- Secret `postgresql-admin-credentials` должен быть создан через Vault Secrets Operator перед установкой
 
 **Проверка подключения к PostgreSQL:**
 ```bash
@@ -723,7 +789,7 @@ database:
   host: postgresql.postgresql.svc.cluster.local  # Замените на ваш адрес PostgreSQL
 ```
 
-**Шаг 3: Создать ExternalSecret для PostgreSQL credentials в namespace keycloak**
+**Шаг 3: Создать VaultStaticSecret для PostgreSQL credentials в namespace keycloak**
 
 Секреты PostgreSQL для Keycloak должны быть созданы в namespace `keycloak`, где будет развернут Keycloak:
 
@@ -731,19 +797,49 @@ database:
 # Создать namespace для Keycloak (если еще не создан)
 kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать ExternalSecret для синхронизации секретов PostgreSQL из Vault
-kubectl apply -f manifests/services/keycloak/postgresql-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации секретов PostgreSQL из Vault
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: postgresql-keycloak-credentials
+  namespace: keycloak
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: keycloak/postgresql
+  refreshAfter: 60s
+  destination:
+    name: postgresql-keycloak-credentials
+    create: true
+EOF
 
-# Создать ExternalSecret для синхронизации admin credentials из Vault
-kubectl apply -f manifests/services/keycloak/admin-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации admin credentials из Vault
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: keycloak-admin-credentials
+  namespace: keycloak
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: keycloak/admin
+  refreshAfter: 60s
+  destination:
+    name: keycloak-admin-credentials
+    create: true
+EOF
 
 # Проверить синхронизацию секретов
-kubectl get externalsecret -n keycloak
+kubectl get vaultstaticsecret -n keycloak
 kubectl get secret postgresql-keycloak-credentials -n keycloak
 kubectl get secret keycloak-admin-credentials -n keycloak
 ```
 
-**Примечание:** Секреты PostgreSQL и admin credentials для Keycloak уже сохранены в Vault в разделе 6.1. Здесь мы создаем ExternalSecret в namespace `keycloak` для синхронизации этих секретов.
+**Примечание:** Секреты PostgreSQL и admin credentials для Keycloak уже сохранены в Vault в разделе 6.1. Здесь мы создаем VaultStaticSecret в namespace `keycloak` для синхронизации этих секретов.
 
 #### 7.3. Создание Keycloak инстанса
 
@@ -880,27 +976,72 @@ vault kv put secret/grafana/admin \
 - Используйте команду: `htpasswd -nbBC 10 "" <пароль> | tr -d ':\n' | sed 's/$2y/$2a/'`
 - Сохраните хеш в Vault по пути `secret/argocd/admin` с ключом `password`
 
-#### 10.2. Создание ExternalSecret для синхронизации секретов
+#### 10.2. Создание VaultStaticSecret для синхронизации секретов
 
 ```bash
 # Создать namespace для Argo CD и Jenkins (если еще не созданы)
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать ExternalSecret для Argo CD
-kubectl apply -f manifests/services/argocd/admin-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для Argo CD
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: argocd-admin-credentials
+  namespace: argocd
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: argocd/admin
+  refreshAfter: 60s
+  destination:
+    name: argocd-initial-admin-secret
+    create: true
+EOF
 
-# Создать ExternalSecret для Jenkins
-kubectl apply -f manifests/services/jenkins/admin-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для Jenkins
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: jenkins-admin-credentials
+  namespace: jenkins
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: jenkins/admin
+  refreshAfter: 60s
+  destination:
+    name: jenkins-admin-credentials
+    create: true
+EOF
 
-# Создать ExternalSecret для Grafana (будет использоваться при установке Prometheus Kube Stack)
+# Создать VaultStaticSecret для Grafana (будет использоваться при установке Prometheus Kube Stack)
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f manifests/services/grafana/admin-credentials-externalsecret.yaml
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: grafana-admin-credentials
+  namespace: kube-prometheus-stack
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: grafana/admin
+  refreshAfter: 60s
+  destination:
+    name: grafana-admin
+    create: true
+EOF
 
 # Проверить синхронизацию секретов
-kubectl get externalsecret -n argocd
-kubectl get externalsecret -n jenkins
-kubectl get externalsecret -n kube-prometheus-stack
+kubectl get vaultstaticsecret -n argocd
+kubectl get vaultstaticsecret -n jenkins
+kubectl get vaultstaticsecret -n kube-prometheus-stack
 kubectl get secret argocd-initial-admin-secret -n argocd
 kubectl get secret jenkins-admin-credentials -n jenkins
 kubectl get secret grafana-admin -n kube-prometheus-stack
@@ -938,11 +1079,11 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-co
 
 **Получение паролей:**
 ```bash
-# Пароль администратора Argo CD (из Vault через ExternalSecret)
+# Пароль администратора Argo CD (из Vault через VaultStaticSecret)
 kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d | echo
 # Примечание: Это bcrypt хеш, для использования нужно знать исходный пароль
 
-# Пароль администратора Jenkins (из Vault через ExternalSecret)
+# Пароль администратора Jenkins (из Vault через VaultStaticSecret)
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
@@ -1001,40 +1142,50 @@ vault kv get secret/argocd/oidc
 "
 ```
 
-**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+**Шаг 3: Создать VaultStaticSecret для синхронизации Client Secret**
 
-ExternalSecret синхронизирует Client Secret из Vault напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`, который используется Argo CD для OIDC аутентификации.
+VaultStaticSecret синхронизирует Client Secret из Vault в отдельный секрет `argocd-oidc-secret`, который используется Argo CD для OIDC аутентификации.
 
 ```bash
-# Создать ExternalSecret для синхронизации OIDC client-secret напрямую в argocd-secret
-# Этот ExternalSecret обновляет секрет argocd-secret с ключом oidc.keycloak.clientSecret
-kubectl apply -f manifests/services/argocd/argocd-secret-oidc-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации OIDC client-secret
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: argocd-oidc-secret
+  namespace: argocd
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: argocd/oidc
+  refreshAfter: 60s
+  destination:
+    name: argocd-oidc-secret
+    create: true
+EOF
 
-# Проверить статус ExternalSecret
-kubectl get externalsecret argocd-secret-oidc -n argocd
-kubectl describe externalsecret argocd-secret-oidc -n argocd
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret argocd-oidc-secret -n argocd
+kubectl describe vaultstaticsecret argocd-oidc-secret -n argocd
 
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret argocd-secret-oidc -n argocd --timeout=60s
+# Проверить созданный Secret
+kubectl get secret argocd-oidc-secret -n argocd
 
-# Проверить, что ключ добавлен в argocd-secret
-kubectl get secret argocd-secret -n argocd -o jsonpath='{.data}' | jq 'keys' | grep -i oidc
+# Проверить значение Client Secret (должно быть реальное значение)
+kubectl get secret argocd-oidc-secret -n argocd -o jsonpath='{.data.client_secret}' | base64 -d && echo
 
-# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
-kubectl get secret argocd-secret -n argocd -o jsonpath='{.data.oidc\.keycloak\.clientSecret}' | base64 -d && echo
-
-# Если значение содержит строку типа "$argocd-oidc-secret:client_secret", значит синхронизация не прошла
-# Проверьте логи External Secrets Operator:
-kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i argocd-secret-oidc
+# Если синхронизация не прошла, проверьте логи Vault Secrets Operator:
+kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i argocd
 ```
 
 **Важно:**
-- ExternalSecret использует `creationPolicy: Merge`, что позволяет добавлять ключ в существующий секрет `argocd-secret`
-- Ключ `oidc.keycloak.clientSecret` должен содержать реальное значение Client Secret из Keycloak, а не строку с `$`
+- VaultStaticSecret создает отдельный секрет `argocd-oidc-secret` с ключом `client_secret`
+- Ключ `client_secret` должен содержать реальное значение Client Secret из Keycloak
 - Если синхронизация не прошла, проверьте:
   - Существует ли секрет в Vault по пути `secret/argocd/oidc` с ключом `client_secret`
-  - Настроен ли ClusterSecretStore для Vault
-  - Работает ли External Secrets Operator
+  - Настроен ли VaultAuth для Vault Secrets Operator
+  - Работает ли Vault Secrets Operator
 
 **Шаг 4: Обновить Argo CD с OIDC конфигурацией**
 
@@ -1083,8 +1234,7 @@ configs:
 
 **Важно:**
 - OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/services/argocd/argocd-values.yaml`
-- Client Secret синхронизируется из Vault через External Secrets Operator напрямую в `argocd-secret` с ключом `oidc.keycloak.clientSecret`
-- ExternalSecret `argocd-secret-oidc` использует `creationPolicy: Merge` для добавления ключа в существующий секрет
+- Client Secret синхронизируется из Vault через Vault Secrets Operator в секрет `argocd-oidc-secret`
 - RBAC настраивается на основе групп из Keycloak через `policy.csv`
 - **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/services/argocd/OIDC_TROUBLESHOOTING.md`
 
@@ -1092,8 +1242,8 @@ configs:
 
 **Важно:** Перед настройкой GitHub token убедитесь, что:
 - Jenkins установлен и работает
-- External Secrets Operator установлен и работает
-- ClusterSecretStore для Vault настроен
+- Vault Secrets Operator установлен и работает
+- VaultAuth для Vault Secrets Operator настроен
 
 **Шаг 1: Создать Personal Access Token в GitHub**
 
@@ -1138,23 +1288,35 @@ vault kv get secret/jenkins/github
 "
 ```
 
-**Шаг 3: Создать ExternalSecret для синхронизации GitHub Token**
+**Шаг 3: Создать VaultStaticSecret для синхронизации GitHub Token**
 
 ```bash
-# Создать ExternalSecret для синхронизации GitHub token
-kubectl apply -f manifests/services/jenkins/github-token-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации GitHub token
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: jenkins-github-token
+  namespace: jenkins
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: jenkins/github
+  refreshAfter: 60s
+  destination:
+    name: jenkins-github-token
+    create: true
+EOF
 
-# Проверить статус ExternalSecret
-kubectl get externalsecret jenkins-github-token -n jenkins
-kubectl describe externalsecret jenkins-github-token -n jenkins
-
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret jenkins-github-token -n jenkins --timeout=60s
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret jenkins-github-token -n jenkins
+kubectl describe vaultstaticsecret jenkins-github-token -n jenkins
 
 # Проверить созданный Secret
 kubectl get secret jenkins-github-token -n jenkins
 
-# Проверить значение токена (должно быть реальное значение, а не строка с $)
+# Проверить значение токена (должно быть реальное значение)
 kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
 ```
 
@@ -1185,8 +1347,8 @@ kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
 **Важно:** Перед настройкой Docker Registry убедитесь, что:
 - Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
 - Jenkins установлен и работает
-- External Secrets Operator установлен и работает
-- ClusterSecretStore для Vault настроен
+- Vault Secrets Operator установлен и работает
+- VaultAuth для Vault Secrets Operator настроен
 
 **Примечание:** Для Timeweb Container Registry используется **API Token** вместо пароля. В Vault credentials сохраняются с полем `api_token`, которое затем используется как `password` в Jenkins credentials для совместимости с Docker login.
 
@@ -1226,15 +1388,30 @@ vault kv get secret/jenkins/docker-registry
 "
 ```
 
-**Шаг 2: Создать ExternalSecret для синхронизации Docker Registry credentials**
+**Шаг 2: Создать VaultStaticSecret для синхронизации Docker Registry credentials**
 
 ```bash
-# Создать ExternalSecret для синхронизации Docker Registry credentials
-kubectl apply -f manifests/services/jenkins/docker-registry-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации Docker Registry credentials
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: jenkins-docker-registry
+  namespace: jenkins
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: jenkins/docker-registry
+  refreshAfter: 60s
+  destination:
+    name: jenkins-docker-registry
+    create: true
+EOF
 
-# Проверить статус ExternalSecret
-kubectl get externalsecret jenkins-docker-registry -n jenkins
-kubectl describe externalsecret jenkins-docker-registry -n jenkins
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret jenkins-docker-registry -n jenkins
+kubectl describe vaultstaticsecret jenkins-docker-registry -n jenkins
 
 # Дождаться синхронизации (может занять несколько секунд)
 kubectl wait --for=condition=Ready externalsecret jenkins-docker-registry -n jenkins --timeout=60s
@@ -1320,7 +1497,7 @@ pipeline {
 ```
 
 **Важно:**
-- GitHub token синхронизируется из Vault через External Secrets Operator в секрет `jenkins-github-token`
+- GitHub token синхронизируется из Vault через Vault Secrets Operator в секрет `jenkins-github-token`
 - Секрет монтируется в Jenkins через `additionalExistingSecrets` и используется в JCasC через переменную `${jenkins-github-token-token}`
 - GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
 - Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
@@ -1335,8 +1512,8 @@ Docker Registry credentials могут использоваться не тол�
 **Важно:** Перед настройкой Docker Registry credentials убедитесь, что:
 - Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
 - Dev кластер развернут и настроен
-- External Secrets Operator установлен и работает в dev кластере
-- ClusterSecretStore для Vault настроен в dev кластере (см. раздел "Шаг 6: Установка и настройка External Secrets Operator для работы с внешним Vault")
+- Vault Secrets Operator установлен и работает в dev кластере
+- VaultAuth для Vault Secrets Operator настроен в dev кластере (см. раздел "Шаг 6: Установка и настройка Vault Secrets Operator для работы с внешним Vault")
 
 **Шаг 1: Создать и сохранить .dockerconfigjson в Vault**
 
@@ -1393,66 +1570,43 @@ vault kv get secret/kubernetes/docker-registry
 "
 ```
 
-**Шаг 2: Создать ExternalSecret для синхронизации Docker Registry credentials**
+**Шаг 2: Создать VaultStaticSecret для синхронизации Docker Registry credentials**
 
-**Важно:** ExternalSecret создается в dev кластере, так как Docker Registry credentials нужны для pull образов в dev кластере, где развертываются приложения.
-
-Создайте файл `manifests/dev/docker-registry/docker-registry-externalsecret.yaml`:
-
-```yaml
----
-# ExternalSecret для синхронизации Docker Registry credentials для использования в Kubernetes ImagePullSecrets
-# Использование:
-# 1. Убедитесь, что .dockerconfigjson сохранен в Vault по пути secret/kubernetes/docker-registry с ключом dockerconfigjson
-# 2. Убедитесь, что ClusterSecretStore для Vault настроен в dev кластере
-# 3. Примените манифест в dev кластере: kubectl apply -f manifests/dev/docker-registry/docker-registry-externalsecret.yaml
-# 4. Используйте Secret в ImagePullSecrets для подов, которым нужен доступ к приватному Docker Registry
-
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: docker-registry-credentials
-  namespace: 
-  labels:
-    app: docker-registry
-    component: credentials
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: vault
-    kind: ClusterSecretStore
-  target:
-    name: docker-registry-credentials
-    creationPolicy: Owner
-    template:
-      type: kubernetes.io/dockerconfigjson
-      data:
-        .dockerconfigjson: "{{ .dockerconfigjson }}"
-  data:
-    - secretKey: dockerconfigjson
-      remoteRef:
-        key: secret/kubernetes/docker-registry
-        property: dockerconfigjson
-```
-
-**Шаг 3: Применить ExternalSecret в dev кластере**
+**Важно:** VaultStaticSecret создается в dev кластере, так как Docker Registry credentials нужны для pull образов в dev кластере, где развертываются приложения.
 
 ```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Создать namespace для Docker Registry credentials (если нужен отдельный namespace)
-# kubectl create namespace docker-registry --dry-run=client -o yaml | kubectl apply -f -
+# Создать VaultStaticSecret для Docker Registry credentials
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: docker-registry-credentials
+  namespace: default
+  labels:
+    app: docker-registry
+    component: credentials
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: kubernetes/docker-registry
+  refreshAfter: 60s
+  destination:
+    name: docker-registry-credentials
+    create: true
+    type: kubernetes.io/dockerconfigjson
+    transformation:
+      templates:
+        .dockerconfigjson:
+          text: '{{ .Secrets.dockerconfigjson }}'
+EOF
 
-# Применить ExternalSecret в dev кластере
-kubectl apply -f manifests/dev/docker-registry/docker-registry-externalsecret.yaml
-
-# Проверить статус ExternalSecret
-kubectl get externalsecret docker-registry-credentials -n default
-kubectl describe externalsecret docker-registry-credentials -n default
-
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret docker-registry-credentials -n default --timeout=60s
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret docker-registry-credentials -n default
+kubectl describe vaultstaticsecret docker-registry-credentials -n default
 
 # Проверить созданный Secret
 kubectl get secret docker-registry-credentials -n default
@@ -1500,9 +1654,9 @@ imagePullSecrets:
 
 Для использования Docker Registry credentials в Argo CD приложениях:
 
-1. ExternalSecret уже создан в dev кластере (см. Шаг 3)
+1. VaultStaticSecret уже создан в dev кластере (см. Шаг 2)
 2. Secret `docker-registry-credentials` будет автоматически синхронизирован в namespace `default` (или в указанном namespace)
-3. Для использования в других namespace создайте ExternalSecret в нужном namespace или скопируйте Secret
+3. Для использования в других namespace создайте VaultStaticSecret в нужном namespace или скопируйте Secret
 4. Добавьте ImagePullSecret в ServiceAccount, который используется приложениями
 5. Или укажите `imagePullSecrets` в манифестах приложений
 
@@ -1556,15 +1710,15 @@ spec:
 **Важно:**
 - Secret должен иметь тип `kubernetes.io/dockerconfigjson`
 - Secret должен содержать ключ `.dockerconfigjson` с валидным JSON
-- Для использования в разных namespace создайте ExternalSecret в каждом namespace или используйте ClusterSecretStore с правильными настройками
+- Для использования в разных namespace создайте VaultStaticSecret в каждом namespace
 - Для Timeweb Container Registry используется API Token вместо пароля, но в Kubernetes Secret он сохраняется в поле `password` для совместимости
 
 **Диагностика, если ImagePullSecrets не работает:**
 
 ```bash
-# 1. Проверить статус ExternalSecret
-kubectl get externalsecret docker-registry-credentials -n default
-kubectl describe externalsecret docker-registry-credentials -n default
+# 1. Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret docker-registry-credentials -n default
+kubectl describe vaultstaticsecret docker-registry-credentials -n default
 
 # 2. Проверить созданный Secret
 kubectl get secret docker-registry-credentials -n default -o yaml
@@ -1576,10 +1730,10 @@ kubectl get secret docker-registry-credentials -n default -o jsonpath='{.type}' 
 # 4. Проверить содержимое .dockerconfigjson
 kubectl get secret docker-registry-credentials -n default -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq .
 
-# 5. Проверить логи External Secrets Operator
-kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i "docker-registry"
+# 5. Проверить логи Vault Secrets Operator
+kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i "docker-registry"
 
-# 6. Проверить события ExternalSecret
+# 6. Проверить события VaultStaticSecret
 kubectl get events -n default --field-selector involvedObject.name=docker-registry-credentials
 
 # 7. Проверить, что секрет существует в Vault
@@ -1598,10 +1752,10 @@ kubectl describe pod <pod-name> -n <namespace> | grep -i "imagepull\|pull"
 ### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** 
-- Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через External Secrets Operator.
+- Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через Vault Secrets Operator.
 - **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana (`additionalDataSources` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`). Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен.
 
-#### 12.1. Создание секрета в Vault и ExternalSecret для Grafana admin credentials
+#### 12.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
 
 Секрет для Grafana должен быть создан перед установкой Prometheus Kube Stack:
 
@@ -1637,18 +1791,33 @@ vault kv get secret/grafana/admin
 "
 ```
 
-**Шаг 2: Создать ExternalSecret для синхронизации секретов**
+**Шаг 2: Создать VaultStaticSecret для синхронизации секретов**
 
 ```bash
 # Создать namespace для Prometheus Kube Stack (если еще не создан)
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать ExternalSecret для синхронизации admin credentials из Vault
-kubectl apply -f manifests/services/grafana/admin-credentials-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации admin credentials из Vault
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: grafana-admin-credentials
+  namespace: kube-prometheus-stack
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: grafana/admin
+  refreshAfter: 60s
+  destination:
+    name: grafana-admin
+    create: true
+EOF
 
 # Проверить синхронизацию секретов
-kubectl get externalsecret -n kube-prometheus-stack
-kubectl describe externalsecret grafana-admin-credentials -n kube-prometheus-stack
+kubectl get vaultstaticsecret -n kube-prometheus-stack
+kubectl describe vaultstaticsecret grafana-admin-credentials -n kube-prometheus-stack
 
 # Проверить созданный Secret
 kubectl get secret grafana-admin -n kube-prometheus-stack
@@ -1684,16 +1853,16 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-- Secret `grafana-admin` должен быть создан через External Secrets Operator перед установкой
+- Secret `grafana-admin` должен быть создан через Vault Secrets Operator перед установкой
 - Admin credentials настроены в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
 - **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании
 
 **Получение пароля администратора Grafana:**
 ```bash
-# Имя администратора Grafana (из Vault через ExternalSecret)
+# Имя администратора Grafana (из Vault через VaultStaticSecret)
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-user}' | base64 -d && echo
 
-# Пароль администратора Grafana (из Vault через ExternalSecret)
+# Пароль администратора Grafana (из Vault через VaultStaticSecret)
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
@@ -1751,40 +1920,51 @@ vault kv get secret/grafana/oidc
 "
 ```
 
-**Шаг 3: Создать ExternalSecret для синхронизации Client Secret**
+**Шаг 3: Создать VaultStaticSecret для синхронизации Client Secret**
 
-ExternalSecret синхронизирует Client Secret из Vault в секрет `grafana-oidc-secret`, который используется Grafana для OIDC аутентификации через переменную окружения.
+VaultStaticSecret синхронизирует Client Secret из Vault в секрет `grafana-oidc-secret`, который используется Grafana для OIDC аутентификации через переменную окружения.
 
 ```bash
-# Создать ExternalSecret для синхронизации OIDC client-secret для Grafana
-kubectl apply -f manifests/services/grafana/oidc-secret-externalsecret.yaml
+# Создать VaultStaticSecret для синхронизации OIDC client-secret для Grafana
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: grafana-oidc-secret
+  namespace: kube-prometheus-stack
+spec:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: grafana/oidc
+  refreshAfter: 60s
+  destination:
+    name: grafana-oidc-secret
+    create: true
+EOF
 
-# Проверить статус ExternalSecret
-kubectl get externalsecret grafana-oidc-secret -n kube-prometheus-stack
-kubectl describe externalsecret grafana-oidc-secret -n kube-prometheus-stack
-
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret grafana-oidc-secret -n kube-prometheus-stack --timeout=60s
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret grafana-oidc-secret -n kube-prometheus-stack
+kubectl describe vaultstaticsecret grafana-oidc-secret -n kube-prometheus-stack
 
 # Проверить созданный Secret
 kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
 
-# Проверить значение Client Secret (должно быть реальное значение, а не строка с $)
+# Проверить значение Client Secret (должно быть реальное значение)
 kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
 
-# Если значение содержит строку типа "$grafana-oidc-secret:client_secret", значит синхронизация не прошла
-# Проверьте логи External Secrets Operator:
-kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i grafana-oidc-secret
+# Если синхронизация не прошла, проверьте логи Vault Secrets Operator:
+kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i grafana
 ```
 
 **Важно:**
-- ExternalSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
+- VaultStaticSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
 - Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
 - OIDC конфигурация уже настроена в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
 - Если синхронизация не прошла, проверьте:
   - Существует ли секрет в Vault по пути `secret/grafana/oidc` с ключом `client_secret`
-  - Настроен ли ClusterSecretStore для Vault
-  - Работает ли External Secrets Operator
+  - Настроен ли VaultAuth для Vault Secrets Operator
+  - Работает ли Vault Secrets Operator
 
 **Шаг 4: Перезапустить Grafana (если необходимо)**
 
@@ -1811,7 +1991,7 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
 
 **Важно:**
 - OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`)
-- Client Secret синхронизируется из Vault через External Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
+- Client Secret синхронизируется из Vault через Vault Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
 - Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
 - Grafana автоматически читает переменные окружения с префиксом `GF_` для конфигурации
 - Роли настраиваются на основе групп из Keycloak через `role_attribute_path`:
@@ -2044,7 +2224,7 @@ kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
 
 **Важно:** Dev кластер должен быть развернут после настройки Services кластера, так как он использует Vault из Services кластера для хранения секретов.
 
-**GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **external-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
+**GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **vault-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
 
 **Важно:** Перед применением Application необходимо создать AppProject для организации Application:
 
@@ -2065,7 +2245,7 @@ kubectl apply -f manifests/services/argocd/applications/dev/
 
 **Application для инфраструктурных сервисов:**
 - `manifests/services/argocd/applications/dev/application-cert-manager.yaml`
-- `manifests/services/argocd/applications/dev/application-external-secrets.yaml`
+- `manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml`
 - `manifests/services/argocd/applications/dev/application-fluent-bit.yaml`
 
 Подробнее о AppProject см. раздел "Создание AppProject для организации Application".
@@ -2253,29 +2433,29 @@ kubectl get secret gateway-tls-cert -n default
   - Добавьте домены ваших приложений в `dnsNames`
   - Убедитесь, что `secretName` совпадает с `certificateRefs` в Gateway
 
-### Шаг 6: Установка и настройка External Secrets Operator для работы с внешним Vault
+### Шаг 6: Установка и настройка Vault Secrets Operator для работы с внешним Vault
 
-External Secrets Operator будет подключаться к Vault, который находится в services кластере.
+Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
 
-#### 6.1. Установка External Secrets Operator
+#### 6.1. Установка Vault Secrets Operator
 
 ```bash
-# 1. Добавить Helm репозиторий External Secrets
-helm repo add external-secrets https://charts.external-secrets.io
+# 1. Добавить Helm репозиторий HashiCorp (если еще не добавлен)
+helm repo add hashicorp https://helm.releases.hashicorp.com
 helm repo update
 
-# 2. Установить External Secrets Operator
-helm upgrade --install external-secrets external-secrets/external-secrets \
-  --namespace external-secrets-system \
-  --create-namespace \
-  -f helm/dev/external-secrets/external-secrets-values.yaml
+# 2. Установить Vault Secrets Operator
+helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
+  --version 0.10.0 \
+  --namespace vault-secrets-operator \
+  --create-namespace
 
 # 3. Проверить установку
-kubectl get pods -n external-secrets-system
-kubectl get crd | grep external-secrets
+kubectl get pods -n vault-secrets-operator
+kubectl get crd | grep secrets.hashicorp.com
 
-# 4. Дождаться готовности External Secrets Operator
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=external-secrets -n external-secrets-system --timeout=300s
+# 4. Дождаться готовности Vault Secrets Operator
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
 ```
 
 #### 6.2. Проверка HTTPRoute для Vault в services кластере
@@ -2329,27 +2509,24 @@ export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
 # Если root token не найден, получите его:
 # kubectl exec -n vault vault-0 -- vault operator init -key-shares=1 -key-threshold=1 -format=json | jq -r '.root_token' > /tmp/vault-root-token.txt
 
-# 3. Создать ServiceAccount для External Secrets Operator в dev кластере
+# 3. Создать ServiceAccount для token reviewer в dev кластере
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Создать ServiceAccount для External Secrets Operator (если еще не создан)
-kubectl create serviceaccount external-secrets -n external-secrets-system --dry-run=client -o yaml | kubectl apply -f -
-
-# 4. Создать ServiceAccount для token reviewer в dev кластере
+# Создать ServiceAccount для token reviewer в dev кластере
 # Этот ServiceAccount будет использоваться Vault для проверки токенов из dev кластера
-kubectl create serviceaccount vault-token-reviewer -n external-secrets-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl create serviceaccount vault-token-reviewer -n vault-secrets-operator --dry-run=client -o yaml | kubectl apply -f -
 
-# 5. Создать ClusterRoleBinding для token reviewer
+# 4. Создать ClusterRoleBinding для token reviewer
 # Дать права на выполнение TokenReview запросов к Kubernetes API
 kubectl create clusterrolebinding vault-token-reviewer-auth-delegator \
   --clusterrole=system:auth-delegator \
-  --serviceaccount=external-secrets-system:vault-token-reviewer \
+  --serviceaccount=vault-secrets-operator:vault-token-reviewer \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 6. Получить токен ServiceAccount для token reviewer
+# 5. Получить токен ServiceAccount для token reviewer
 # Этот токен будет использоваться Vault для проверки токенов из dev кластера
-DEV_TOKEN_REVIEWER_JWT=$(kubectl create token vault-token-reviewer -n external-secrets-system --duration=8760h)
+DEV_TOKEN_REVIEWER_JWT=$(kubectl create token vault-token-reviewer -n vault-secrets-operator --duration=8760h)
 
 # 7. Получить CA сертификат dev кластера
 DEV_CA_CERT=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d)
@@ -2381,26 +2558,29 @@ vault write auth/kubernetes-dev/config \
   disable_iss_validation=true
 "
 
-# 10. Создать политику для External Secrets Operator из dev кластера
+# 10. Создать политику для Vault Secrets Operator из dev кластера
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault policy write external-secrets-dev-policy - <<'EOF'
-# Политика для External Secrets Operator из dev кластера
+vault policy write vault-secrets-operator-dev-policy - <<'EOF'
+# Политика для Vault Secrets Operator из dev кластера
 path \"secret/data/*\" {
   capabilities = [\"read\"]
+}
+path \"secret/metadata/*\" {
+  capabilities = [\"read\", \"list\"]
 }
 EOF
 "
 
-# 11. Создать роль в Vault для External Secrets Operator из dev кластера
+# 11. Создать роль в Vault для Vault Secrets Operator из dev кластера
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
-vault write auth/kubernetes-dev/role/external-secrets-operator \
-  bound_service_account_names=external-secrets \
-  bound_service_account_namespaces=external-secrets-system \
-  policies=external-secrets-dev-policy \
+vault write auth/kubernetes-dev/role/vault-secrets-operator \
+  bound_service_account_names=default \
+  bound_service_account_namespaces=vault-secrets-operator,default \
+  policies=vault-secrets-operator-dev-policy \
   ttl=1h
 "
 ```
@@ -2411,20 +2591,46 @@ vault write auth/kubernetes-dev/role/external-secrets-operator \
 - CA сертификат и адрес Kubernetes API должны соответствовать **dev кластеру**
 - Если CA сертификат слишком большой для передачи через переменную окружения, можно сохранить его в файл и использовать `kubernetes_ca_cert=@/path/to/dev-ca.pem`
 
-#### 6.4. Создание ClusterSecretStore для подключения к внешнему Vault
+#### 6.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
 
-Примените манифест ClusterSecretStore, который указывает на Vault в services кластере:
+Создайте VaultConnection и VaultAuth для подключения к Vault в services кластере:
 
 ```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Применить манифест ClusterSecretStore
-kubectl apply -f manifests/dev/external-secrets/vault-cluster-secret-store.yaml
+# Создать VaultConnection для подключения к внешнему Vault
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: vault-connection
+  namespace: vault-secrets-operator
+spec:
+  address: https://vault.buildbyte.ru
+  skipTLSVerify: false
+EOF
 
-# Проверить ClusterSecretStore
-kubectl get clustersecretstore vault
-kubectl describe clustersecretstore vault
+# Создать VaultAuth для аутентификации в Vault
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: vault-auth
+  namespace: vault-secrets-operator
+spec:
+  vaultConnectionRef: vault-connection
+  method: kubernetes
+  mount: kubernetes-dev
+  kubernetes:
+    role: vault-secrets-operator
+    serviceAccount: default
+EOF
+
+# Проверить VaultConnection и VaultAuth
+kubectl get vaultconnection -n vault-secrets-operator
+kubectl get vaultauth -n vault-secrets-operator
+kubectl describe vaultauth vault-auth -n vault-secrets-operator
 ```
 
 **Важно:** 
@@ -2432,6 +2638,7 @@ kubectl describe clustersecretstore vault
 - Убедитесь, что DNS запись для `vault.buildbyte.ru` настроена и указывает на Gateway
 - Убедитесь, что TLS сертификат для `vault.buildbyte.ru` создан через cert-manager
 - HTTPRoute `vault-server` должен быть применен в services кластере
+- Auth method mount: `kubernetes-dev` (отдельный от services кластера)
 
 ### Шаг 7: Установка Fluent Bit (сбор логов) в dev кластере
 
@@ -2698,14 +2905,14 @@ kubectl create secret generic dev-cluster-secret \
 - После добавления кластера может потребоваться несколько секунд для его появления в интерфейсе
 - После добавления кластера можно создавать Application в Argo CD, которые будут развертываться в dev кластер
 
-#### Добавление dev кластера в Argo CD через External Secrets Operator
+#### Добавление dev кластера в Argo CD через Vault Secrets Operator
 
-Альтернативный способ добавления dev кластера в Argo CD через External Secrets Operator, который синхронизирует kubeconfig из Vault.
+Альтернативный способ добавления dev кластера в Argo CD через Vault Secrets Operator, который синхронизирует kubeconfig из Vault.
 
 **Преимущества:**
 - Централизованное хранение kubeconfig в Vault
 - Автоматическая синхронизация при изменении kubeconfig
-- Управление через Git (ExternalSecret манифест)
+- Управление через Git (VaultStaticSecret манифест)
 
 **Шаг 1: Подготовить kubeconfig для Argo CD**
 
@@ -2792,13 +2999,16 @@ vault kv get secret/argocd/dev-cluster
 "
 ```
 
-**Шаг 3: Создать ExternalSecret манифест**
+**Шаг 3: Создать VaultStaticSecret манифест**
 
-Создайте файл `manifests/services/argocd/dev-cluster-externalsecret.yaml`:
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-```yaml
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
+# Создать VaultStaticSecret для синхронизации dev cluster credentials
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
 metadata:
   name: dev-cluster-secret
   namespace: argocd
@@ -2806,52 +3016,21 @@ metadata:
     app: argocd
     component: cluster-config
 spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: vault
-    kind: ClusterSecretStore
-  target:
+  vaultAuthRef: vault-secrets-operator/vault-auth
+  mount: secret
+  type: kv-v2
+  path: argocd/dev-cluster
+  refreshAfter: 60s
+  destination:
     name: dev-cluster
-    creationPolicy: Owner
-    template:
-      type: Opaque
-      metadata:
-        labels:
-          argocd.argoproj.io/secret-type: cluster
-      data:
-        name: "{{ .name }}"
-        server: "{{ .server }}"
-        config: "{{ .config }}"
-  data:
-    - secretKey: name
-      remoteRef:
-        key: secret/argocd/dev-cluster
-        property: name
-    - secretKey: server
-      remoteRef:
-        key: secret/argocd/dev-cluster
-        property: server
-    - secretKey: config
-      remoteRef:
-        key: secret/argocd/dev-cluster
-        property: config
-```
+    create: true
+    labels:
+      argocd.argoproj.io/secret-type: cluster
+EOF
 
-**Шаг 4: Применить ExternalSecret**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Применить ExternalSecret
-kubectl apply -f manifests/services/argocd/dev-cluster-externalsecret.yaml
-
-# Проверить статус ExternalSecret
-kubectl get externalsecret dev-cluster-secret -n argocd
-kubectl describe externalsecret dev-cluster-secret -n argocd
-
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret dev-cluster-secret -n argocd --timeout=60s
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret dev-cluster-secret -n argocd
+kubectl describe vaultstaticsecret dev-cluster-secret -n argocd
 
 # Проверить созданный Secret
 kubectl get secret dev-cluster -n argocd
@@ -2880,25 +3059,24 @@ kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller -
 ```
 
 **Важно:**
-- ExternalSecret создает Secret с именем `dev-cluster` (указано в `target.name`)
-- Secret автоматически получает метку `argocd.argoproj.io/secret-type: cluster` через template
-- Если Secret уже существует, используйте `creationPolicy: Merge` вместо `Owner`
+- VaultStaticSecret создает Secret с именем `dev-cluster` (указано в `destination.name`)
+- Secret автоматически получает метку `argocd.argoproj.io/secret-type: cluster` через `destination.labels`
 - Config должен быть в формате JSON строки (как в примере выше)
 - Токен должен иметь достаточные права для доступа к API серверу dev кластера
-- После обновления kubeconfig в Vault, ExternalSecret автоматически синхронизирует изменения (с интервалом `refreshInterval: 1h`)
+- После обновления kubeconfig в Vault, VaultStaticSecret автоматически синхронизирует изменения (с интервалом `refreshAfter: 60s`)
 
 **Диагностика, если кластер не отображается:**
 
 ```bash
-# 1. Проверить статус ExternalSecret
-kubectl get externalsecret dev-cluster-secret -n argocd
-kubectl describe externalsecret dev-cluster-secret -n argocd
+# 1. Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret dev-cluster-secret -n argocd
+kubectl describe vaultstaticsecret dev-cluster-secret -n argocd
 
-# Проверить события ExternalSecret
+# Проверить события VaultStaticSecret
 kubectl get events -n argocd --field-selector involvedObject.name=dev-cluster-secret
 
-# 2. Проверить логи External Secrets Operator
-kubectl logs -n external-secrets-system -l app.kubernetes.io/name=external-secrets --tail=50 | grep -i "dev-cluster\|argocd"
+# 2. Проверить логи Vault Secrets Operator
+kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i "dev-cluster\|argocd"
 
 # 3. Проверить, что секрет существует в Vault
 export VAULT_ADDR="http://127.0.0.1:8200"
@@ -2931,7 +3109,7 @@ kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller -
 
 AppProject в Argo CD используются для организации Application и управления доступом к ресурсам. В инфраструктуре настроены два проекта:
 
-1. **`dev-infrastructure`** — для инфраструктурных сервисов dev кластера (cert-manager, external-secrets, fluent-bit и т.д.)
+1. **`dev-infrastructure`** — для инфраструктурных сервисов dev кластера (cert-manager, vault-secrets-operator, fluent-bit и т.д.)
 2. **`dev-microservices`** — для микросервисов dev кластера (donweather-ms-weather, donweather-front и т.д.)
 
 **Применение AppProject:**
@@ -2954,8 +3132,8 @@ kubectl describe appproject dev-microservices -n argocd
 **Описание проектов:**
 
 - **`dev-infrastructure`**: 
-  - Разрешает репозитории: Helm charts (jetstack, external-secrets, fluent) и DonInfrastructure
-  - Разрешает namespaces: `cert-manager`, `external-secrets-system`, `logging` в dev кластере
+  - Разрешает репозитории: Helm charts (jetstack, hashicorp, fluent) и DonInfrastructure
+  - Разрешает namespaces: `cert-manager`, `vault-secrets-operator`, `logging` в dev кластере
   - Роли: `infrastructure-admin` (группа `InfrastructureAdmins`), `infrastructure-operator` (группа `InfrastructureOperators`)
 
 - **`dev-microservices`**:
@@ -3196,8 +3374,8 @@ kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].va
 kubectl get pods -n cert-manager
 kubectl get crd | grep cert-manager
 
-# 5. Проверить External Secrets Operator
-kubectl get pods -n external-secrets-system
+# 5. Проверить Vault Secrets Operator
+kubectl get pods -n vault-secrets-operator
 kubectl get clustersecretstore vault
 
 # 6. Проверить namespaces
@@ -3222,32 +3400,32 @@ kubectl get namespaces
 - [ ] Gateway API с NGINX Gateway Fabric установлен
 - [ ] CSI драйвер Timeweb Cloud установлен и работает
 - [ ] Vault установлен, инициализирован и разблокирован
-- [ ] External Secrets Operator установлен и работает
-- [ ] ClusterSecretStore для Vault настроен
-- [ ] Kubernetes auth в Vault настроен для External Secrets Operator
+- [ ] Vault Secrets Operator установлен и работает
+- [ ] VaultConnection и VaultAuth для Vault настроены
+- [ ] Kubernetes auth в Vault настроен для Vault Secrets Operator
 - [ ] cert-manager установлен с поддержкой Gateway API
 - [ ] Gateway создан (HTTP listener работает)
 - [ ] ClusterIssuer создан и готов (Status: Ready)
 - [ ] Certificate создан и Secret `gateway-tls-cert` существует
 - [ ] HTTPS listener Gateway активирован (после создания Secret)
 - [ ] Секреты PostgreSQL сохранены в Vault (путь: `secret/postgresql/admin` и `secret/keycloak/postgresql`)
-- [ ] ExternalSecret `postgresql-admin-credentials` создан и синхронизирован
-- [ ] Secret `postgresql-admin-credentials` создан External Secrets Operator
+- [ ] VaultStaticSecret `postgresql-admin-credentials` создан и синхронизирован
+- [ ] Secret `postgresql-admin-credentials` создан Vault Secrets Operator
 - [ ] PostgreSQL установлен через Helm Bitnami и доступен
 - [ ] База данных и пользователь для Keycloak созданы в PostgreSQL
 - [ ] Секреты PostgreSQL для Keycloak сохранены в Vault (путь: `secret/keycloak/postgresql`)
 - [ ] Admin credentials для Keycloak сохранены в Vault (путь: `secret/keycloak/admin`)
-- [ ] ExternalSecret `postgresql-keycloak-credentials` создан и синхронизирован в namespace `keycloak`
-- [ ] ExternalSecret `keycloak-admin-credentials` создан и синхронизирован в namespace `keycloak`
-- [ ] Secret `postgresql-keycloak-credentials` создан External Secrets Operator
-- [ ] Secret `keycloak-admin-credentials` создан External Secrets Operator
+- [ ] VaultStaticSecret `postgresql-keycloak-credentials` создан и синхронизирован в namespace `keycloak`
+- [ ] VaultStaticSecret `keycloak-admin-credentials` создан и синхронизирован в namespace `keycloak`
+- [ ] Secret `postgresql-keycloak-credentials` создан Vault Secrets Operator
+- [ ] Secret `keycloak-admin-credentials` создан Vault Secrets Operator
 - [ ] Адрес PostgreSQL обновлен в `keycloak-instance.yaml`
 - [ ] Keycloak Operator установлен и Keycloak инстанс готов
 - [ ] Keycloak успешно подключен к PostgreSQL (проверено в логах)
 - [ ] Argo CD установлен и сервисы готовы
 - [ ] Клиент `argocd` создан в Keycloak с правильными redirect URIs
 - [ ] Client Secret для Argo CD сохранен в Vault (путь: `secret/argocd/oidc` с ключом `client_secret`)
-- [ ] ExternalSecret `argocd-secret-oidc` создан и синхронизирован в namespace `argocd`
+- [ ] VaultStaticSecret `argocd-oidc-secret` создан и синхронизирован в namespace `argocd`
 - [ ] Ключ `oidc.keycloak.clientSecret` добавлен в секрет `argocd-secret` с реальным значением (не строка с `$`)
 - [ ] Argo CD обновлен с OIDC конфигурацией
 - [ ] OIDC аутентификация через Keycloak работает (проверено в браузере)
@@ -3255,18 +3433,18 @@ kubectl get namespaces
 - [ ] Jenkins установлен и сервисы готовы
 - [ ] GitHub Personal Access Token создан в GitHub
 - [ ] GitHub token сохранен в Vault (путь: `secret/jenkins/github` с ключом `token`)
-- [ ] ExternalSecret `jenkins-github-token` создан и синхронизирован в namespace `jenkins`
-- [ ] Secret `jenkins-github-token` создан External Secrets Operator с ключом `token`
+- [ ] VaultStaticSecret `jenkins-github-token` создан и синхронизирован в namespace `jenkins`
+- [ ] Secret `jenkins-github-token` создан Vault Secrets Operator с ключом `token`
 - [ ] Jenkins обновлен с конфигурацией GitHub credentials через JCasC
 - [ ] GitHub credentials доступны в Jenkins (ID: `github-token`)
 - [ ] Admin credentials для Grafana сохранены в Vault (путь: `secret/grafana/admin`)
-- [ ] ExternalSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
-- [ ] Secret `grafana-admin` создан External Secrets Operator
+- [ ] VaultStaticSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
+- [ ] Secret `grafana-admin` создан Vault Secrets Operator
 - [ ] Prometheus Kube Stack установлен и сервисы готовы
 - [ ] Клиент `grafana` создан в Keycloak с правильными redirect URIs
 - [ ] Client Secret для Grafana сохранен в Vault (путь: `secret/grafana/oidc` с ключом `client_secret`)
-- [ ] ExternalSecret `grafana-oidc-secret` создан и синхронизирован в namespace `kube-prometheus-stack`
-- [ ] Secret `grafana-oidc-secret` создан External Secrets Operator с ключом `client_secret`
+- [ ] VaultStaticSecret `grafana-oidc-secret` создан и синхронизирован в namespace `kube-prometheus-stack`
+- [ ] Secret `grafana-oidc-secret` создан Vault Secrets Operator с ключом `client_secret`
 - [ ] Переменная окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` установлена в поде Grafana (через `envValueFrom`)
 - [ ] OIDC аутентификация через Keycloak работает в Grafana (проверено в браузере)
 - [ ] RBAC настроен для использования групп из Keycloak (GrafanaAdmins → Admin, GrafanaEditors → Editor)
@@ -3310,30 +3488,30 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 
 ## Дополнительная документация
 
-- **Настройка Kubernetes Auth в Vault для External Secrets Operator:** [`manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md`](manifests/services/external-secrets/VAULT_KUBERNETES_AUTH_SETUP.md)
+- **Настройка Kubernetes Auth в Vault для Vault Secrets Operator:** см. раздел 5.1 в этом документе
 - **Настройка Keycloak Authentication для Jenkins:** [`helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md)
 
 ## Важные замечания
 
 1. **Порядок установки критичен:**
    - **Vault должен быть установлен одним из первых** (для хранения секретов)
-   - **External Secrets Operator должен быть установлен после Vault** (для синхронизации секретов)
-   - **ClusterSecretStore должен быть настроен после External Secrets Operator** (для подключения к Vault)
+   - **Vault Secrets Operator должен быть установлен после Vault** (для синхронизации секретов)
+   - **VaultConnection и VaultAuth должны быть настроены после Vault Secrets Operator** (для подключения к Vault)
    - **PostgreSQL должен быть установлен перед Keycloak** (Keycloak использует PostgreSQL в качестве базы данных)
    - **Loki должен быть установлен перед Prometheus Kube Stack** (Loki настроен как источник данных в Grafana через `additionalDataSources`)
    - Gateway должен быть создан перед ClusterIssuer (ClusterIssuer ссылается на Gateway для HTTP-01 challenge)
    - Приложения должны быть установлены перед созданием HTTPRoute (HTTPRoute ссылаются на их сервисы)
    - Secret для TLS создается cert-manager автоматически, но HTTPS listener не будет работать до его создания
    - Keycloak Operator требует установки CRDs перед установкой оператора
-   - Vault использует Raft storage, убедитесь, что CSI драйвер работает корректно
-   - **Все секреты должны создаваться через External Secrets Operator**, а не напрямую через `kubectl create secret`
+   - Vault использует file storage в standalone режиме, убедитесь, что CSI драйвер работает корректно
+   - **Все секреты должны создаваться через Vault Secrets Operator (VaultStaticSecret)**, а не напрямую через `kubectl create secret`
 
 2. **Зависимости компонентов:**
-   - **External Secrets Operator** → требует **Vault** (для синхронизации секретов)
-   - **ClusterSecretStore** → требует **Vault** и **Kubernetes auth в Vault** (для подключения External Secrets Operator)
-   - **ExternalSecret** → требует **ClusterSecretStore** и **секреты в Vault** (для синхронизации)
-   - **PostgreSQL** → требует **секреты через External Secrets Operator** (для паролей администратора и репликации)
-   - **Приложения** → требуют **секреты через External Secrets Operator** (Keycloak, Grafana и т.д.)
+   - **Vault Secrets Operator** → требует **Vault** (для синхронизации секретов)
+   - **VaultAuth** → требует **Vault**, **VaultConnection** и **Kubernetes auth в Vault** (для аутентификации)
+   - **VaultStaticSecret** → требует **VaultAuth** и **секреты в Vault** (для синхронизации)
+   - **PostgreSQL** → требует **секреты через Vault Secrets Operator** (для паролей администратора и репликации)
+   - **Приложения** → требуют **секреты через Vault Secrets Operator** (Keycloak, Grafana и т.д.)
    - **Keycloak** → требует **PostgreSQL** (в качестве базы данных)
    - **Prometheus Kube Stack (Grafana)** → требует **Loki** (Loki настроен как источник данных в Grafana)
    - **ClusterIssuer** → требует **Gateway** (для HTTP-01 challenge через Gateway API)
@@ -3357,13 +3535,13 @@ CSI драйвер (независимо)
   ↓
 Vault (установка и инициализация)
   ↓
-External Secrets Operator (синхронизирует секреты из Vault)
+Vault Secrets Operator (синхронизирует секреты из Vault)
   ↓
-ClusterSecretStore для Vault (настройка подключения)
+VaultConnection + VaultAuth (настройка подключения)
   ↓
-PostgreSQL (использует секреты из External Secrets Operator)
+PostgreSQL (использует секреты из Vault Secrets Operator)
   ↓
-Keycloak Operator → Keycloak (использует PostgreSQL и секреты из External Secrets Operator)
+Keycloak Operator → Keycloak (использует PostgreSQL и секреты из Vault Secrets Operator)
   ↓
 cert-manager (независимо)
   ↓
@@ -3384,9 +3562,9 @@ HTTPRoute (ссылаются на Gateway и сервисы приложени�
 ```
 
 **Важно:**
-- **Vault** должен быть установлен до External Secrets Operator
-- **External Secrets Operator** должен быть установлен до приложений, которые используют секреты
-- Все секреты создаются через External Secrets Operator, который синхронизирует их из Vault
+- **Vault** должен быть установлен до Vault Secrets Operator
+- **Vault Secrets Operator** должен быть установлен до приложений, которые используют секреты
+- Все секреты создаются через Vault Secrets Operator (VaultStaticSecret), который синхронизирует их из Vault
 - Секреты для Keycloak, Grafana и других приложений должны быть сохранены в Vault перед установкой приложений
 
 ## Планы на будущее
