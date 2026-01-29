@@ -769,47 +769,17 @@ vault kv put secret/keycloak/database \
 
 **Шаг 4: Создать VaultStaticSecret для Keycloak credentials**
 
-Создайте секреты для Keycloak в namespace `keycloak`:
+Манифесты VaultStaticSecret находятся в `manifests/services/keycloak/`:
+- `keycloak-db-credentials-vaultstaticsecret.yaml` - credentials для подключения к PostgreSQL
+- `keycloak-admin-credentials-vaultstaticsecret.yaml` - admin credentials для Keycloak
 
 ```bash
 # Создать namespace для Keycloak (если еще не создан)
 kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать VaultStaticSecret для пароля базы данных keycloak
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: keycloak-db-credentials
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: keycloak/database
-  refreshAfter: 60s
-  destination:
-    name: keycloak-db-credentials
-    create: true
-EOF
-
-# Создать VaultStaticSecret для синхронизации admin credentials из Vault
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: keycloak-admin-credentials
-  namespace: keycloak
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: keycloak/admin
-  refreshAfter: 60s
-  destination:
-    name: keycloak-admin-credentials
-    create: true
-EOF
+# Применить VaultStaticSecret манифесты
+kubectl apply -f manifests/services/keycloak/keycloak-db-credentials-vaultstaticsecret.yaml
+kubectl apply -f manifests/services/keycloak/keycloak-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n keycloak
@@ -822,8 +792,8 @@ kubectl get secret keycloak-db-credentials -n keycloak -o jsonpath='{.data.usern
 ```
 
 **Примечание:** 
-- Credentials для подключения Keycloak к PostgreSQL хранятся в `secret/keycloak/database`
-- Admin credentials для Keycloak хранятся в `secret/keycloak/admin`
+- Credentials для подключения Keycloak к PostgreSQL хранятся в Vault: `secret/keycloak/database`
+- Admin credentials для Keycloak хранятся в Vault: `secret/keycloak/admin`
 
 #### 7.3. Создание Keycloak инстанса
 
