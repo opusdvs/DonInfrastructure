@@ -695,12 +695,16 @@ POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgres
 # Получить пароль администратора PostgreSQL из Secret
 POSTGRES_PASSWORD=$(kubectl get secret postgresql-admin-credentials -n postgresql -o jsonpath='{.data.postgres_password}' | base64 -d)
 
-# Получить пароль Keycloak из Vault (через временный Secret или напрямую)
-# Вариант 1: Использовать тот же пароль, который сохранили в Vault
-KEYCLOAK_PASSWORD='<ПАРОЛЬ_KEYCLOAK>'
+# Получить пароль Keycloak из Vault
+# Требуется авторизация в Vault (VAULT_TOKEN должен быть установлен)
+KEYCLOAK_PASSWORD=$(kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$VAULT_TOKEN'
+vault kv get -field=password secret/keycloak/database
+")
 
-# Вариант 2: Получить из Vault напрямую (если есть доступ)
-# KEYCLOAK_PASSWORD=$(kubectl exec -it vault-0 -n vault -- sh -c "vault kv get -field=password secret/keycloak/database")
+# Проверить, что пароль получен
+echo "Keycloak password length: ${#KEYCLOAK_PASSWORD}"
 
 # Создать базу данных keycloak
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'CREATE DATABASE keycloak;'"
