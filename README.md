@@ -436,7 +436,7 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault write auth/kubernetes/role/vault-secrets-operator \
   bound_service_account_names=default \
-  bound_service_account_namespaces=vault-secrets-operator,default,argocd,jenkins,keycloak,postgresql,kube-prometheus-stack,logging \
+  bound_service_account_namespaces='*' \
   policies=vault-secrets-operator-policy \
   ttl=1h
 "
@@ -621,23 +621,8 @@ vault kv put secret/keycloak/admin \
 # Создать namespace для PostgreSQL (если еще не создан)
 kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать VaultStaticSecret для PostgreSQL admin credentials
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: postgresql-admin-credentials
-  namespace: postgresql
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: postgresql/admin
-  refreshAfter: 60s
-  destination:
-    name: postgresql-admin-credentials
-    create: true
-EOF
+# Применить VaultStaticSecret для PostgreSQL admin credentials
+kubectl apply -f manifests/services/postgresql/postgresql-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n postgresql
@@ -2578,7 +2563,7 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault write auth/kubernetes-dev/role/vault-secrets-operator \
   bound_service_account_names=default \
-  bound_service_account_namespaces=vault-secrets-operator,default \
+  bound_service_account_namespaces='*' \
   policies=vault-secrets-operator-dev-policy \
   ttl=1h
 "
