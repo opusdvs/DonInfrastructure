@@ -667,11 +667,32 @@ kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
 # \q - выход
 ```
 
-#### 6.4. Создание базы данных и пользователя для Keycloak
+### 7. Установка Keycloak Operator
 
-**Шаг 1: Сохранить секрет Keycloak DB в Vault**
+#### 7.1. Установка оператора
 
-Сначала создайте секрет в Vault с credentials для Keycloak:
+```bash
+# 1. Установить CRDs Keycloak Operator
+# Используем конкретную версию для стабильности (26.5.1)
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+
+# 2. Создать namespace для Keycloak Operator (если еще не создан)
+kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить Keycloak Operator из официального манифеста
+kubectl -n keycloak apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/kubernetes.yml
+
+# 4. Проверить установку оператора
+kubectl get pods -n keycloak
+kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak --timeout=300s
+```
+
+#### 7.2. Подготовка PostgreSQL для Keycloak
+
+Keycloak использует внешний PostgreSQL для хранения данных. Необходимо создать базу данных, пользователя и секреты.
+
+**Шаг 1: Сохранить секреты Keycloak в Vault**
 
 ```bash
 # Сохранить credentials для Keycloak DB в Vault
@@ -683,6 +704,15 @@ vault kv put secret/keycloak/database \
   username='keycloak' \
   password='<ПАРОЛЬ_KEYCLOAK>' \
   database='keycloak'
+"
+
+# Сохранить admin credentials для Keycloak (для входа в UI)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$VAULT_TOKEN'
+vault kv put secret/keycloak/admin \
+  username='admin' \
+  password='<ПАРОЛЬ_ADMIN_KEYCLOAK>'
 "
 ```
 
@@ -729,51 +759,7 @@ kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWOR
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c '\du'" | grep keycloak
 ```
 
-**Важно:**
-- Секрет `secret/keycloak/database` в Vault уже создан и будет использован Keycloak
-- Адрес PostgreSQL для Keycloak: `postgresql.postgresql.svc.cluster.local:5432`
-- База данных: `keycloak`
-- Пользователь: `keycloak`
-- Пароль: из Vault `secret/keycloak/database`
-
-### 7. Установка Keycloak Operator
-
-#### 7.1. Установка оператора
-
-```bash
-# 1. Установить CRDs Keycloak Operator
-# Используем конкретную версию для стабильности (26.5.1)
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
-kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
-
-# 2. Создать namespace для Keycloak Operator (если еще не создан)
-kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Установить Keycloak Operator из официального манифеста
-kubectl -n keycloak apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.5.1/kubernetes/kubernetes.yml
-
-# 4. Проверить установку оператора
-kubectl get pods -n keycloak
-kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak --timeout=300s
-```
-
-#### 7.2. Подготовка PostgreSQL для Keycloak
-
-Keycloak настроен для использования внешнего PostgreSQL. База данных, пользователь и секрет в Vault уже созданы в разделе 6.4.
-
-**Адрес PostgreSQL для Keycloak:**
-- Host: `postgresql.postgresql.svc.cluster.local`
-- Port: `5432`
-- Database: `keycloak`
-- Username: `keycloak`
-- Password: из Vault `secret/keycloak/database`
-
-```bash
-# Проверить доступность PostgreSQL
-kubectl get svc -n postgresql
-```
-
-**Шаг 1: Обновить конфигурацию Keycloak**
+**Шаг 4: Обновить конфигурацию Keycloak**
 
 Откройте `manifests/services/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
 
@@ -782,20 +768,7 @@ database:
   host: postgresql.postgresql.svc.cluster.local  # Замените на ваш адрес PostgreSQL
 ```
 
-**Шаг 2: Сохранить admin credentials Keycloak в Vault**
-
-```bash
-# Сохранить admin credentials для Keycloak (для входа в UI)
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='\$VAULT_TOKEN'
-vault kv put secret/keycloak/admin \
-  username='admin' \
-  password='<ПАРОЛЬ_ADMIN_KEYCLOAK>'
-"
-```
-
-**Шаг 3: Создать VaultStaticSecret для Keycloak credentials**
+**Шаг 5: Создать VaultStaticSecret для Keycloak credentials**
 
 Манифесты VaultStaticSecret находятся в `manifests/services/keycloak/`:
 - `keycloak-db-credentials-vaultstaticsecret.yaml` - credentials для подключения к PostgreSQL (из `secret/keycloak/database`)
@@ -819,9 +792,12 @@ kubectl get secret keycloak-db-credentials -n keycloak -o jsonpath='{.data.passw
 kubectl get secret keycloak-db-credentials -n keycloak -o jsonpath='{.data.username}' | base64 -d && echo
 ```
 
-**Примечание:** 
-- Credentials для подключения Keycloak к PostgreSQL (`secret/keycloak/database`) созданы в разделе 6.4
-- Admin credentials для Keycloak (`secret/keycloak/admin`) созданы в шаге 2 выше
+**Важно:**
+- Адрес PostgreSQL для Keycloak: `postgresql.postgresql.svc.cluster.local:5432`
+- База данных: `keycloak`
+- Пользователь: `keycloak`
+- Пароль: из Vault `secret/keycloak/database`
+- Admin credentials: из Vault `secret/keycloak/admin`
 
 #### 7.3. Создание Keycloak инстанса
 
