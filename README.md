@@ -568,14 +568,12 @@ vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный
 # Ключи секрета:
 #   - postgres_password: пароль для admin пользователя postgres
 #   - replication_password: пароль для пользователя репликации
-#   - keycloak_password: пароль для пользователя keycloak (база и пользователь создаются автоматически через initdb)
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv put secret/postgresql/admin \
   postgres_password='<ВАШ_ПАРОЛЬ_POSTGRES>' \
-  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>' \
-  keycloak_password='<ВАШ_ПАРОЛЬ_KEYCLOAK>'
+  replication_password='<ВАШ_ПАРОЛЬ_REPLICATION>'
 "
 
 # Проверить, что секреты сохранены правильно
@@ -607,7 +605,6 @@ vault kv put secret/keycloak/admin \
 - Используйте надежные пароли для production окружения
 - Пароли должны быть достаточно длинными (минимум 16 символов)
 - Сохраните пароли в безопасном месте (например, в менеджере паролей)
-- **База данных `keycloak` и пользователь `keycloak` создаются автоматически** при первом запуске PostgreSQL через initdb скрипт
 
 #### 6.2. Создание VaultStaticSecret для PostgreSQL
 
@@ -670,11 +667,10 @@ kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
 # \q - выход
 ```
 
-#### 6.4. Проверка базы данных для Keycloak
+#### 6.4. Создание базы данных и пользователя для Keycloak
 
-**Примечание:** База данных `keycloak` и пользователь `keycloak` создаются **автоматически** при первом запуске PostgreSQL через initdb скрипт (настроен в `helm/services/postgresql/postgresql-values.yaml`).
+После установки PostgreSQL создайте базу данных и пользователя для Keycloak:
 
-**Проверка создания базы данных:**
 ```bash
 # Получить имя pod PostgreSQL
 POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
@@ -682,21 +678,33 @@ POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgres
 # Получить пароль администратора PostgreSQL из Secret
 POSTGRES_PASSWORD=$(kubectl get secret postgresql-admin-credentials -n postgresql -o jsonpath='{.data.postgres_password}' | base64 -d)
 
+# Создать базу данных keycloak
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'CREATE DATABASE keycloak;'"
+
+# Создать пользователя keycloak (замените <ПАРОЛЬ_KEYCLOAK> на реальный пароль)
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c \"CREATE USER keycloak WITH ENCRYPTED PASSWORD '<ПАРОЛЬ_KEYCLOAK>';\""
+
+# Выдать права на базу данных
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;'"
+
+# Выдать права на схему public
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -d keycloak -c 'GRANT ALL ON SCHEMA public TO keycloak;'"
+```
+
+**Проверка создания базы данных:**
+```bash
 # Проверить создание базы данных keycloak
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c '\l'" | grep keycloak
 
 # Проверить создание пользователя keycloak
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c '\du'" | grep keycloak
-
-# Проверить права пользователя на базу keycloak
-kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -d keycloak -c '\dn+'"
 ```
 
 **Важно:**
 - Адрес PostgreSQL для Keycloak: `postgresql.postgresql.svc.cluster.local:5432`
-- База данных: `keycloak` (создаётся автоматически)
-- Пользователь: `keycloak` (создаётся автоматически)
-- Пароль: из Secret `postgresql-admin-credentials` ключ `keycloak_password`
+- База данных: `keycloak`
+- Пользователь: `keycloak`
+- Пароль: тот, который указали при создании пользователя
 
 ### 7. Установка Keycloak Operator
 
@@ -728,7 +736,7 @@ Keycloak настроен для использования внешнего Pos
 - Port: `5432`
 - Database: `keycloak`
 - Username: `keycloak`
-- Password: из Secret `keycloak-db-credentials` ключ `password` (синхронизируется из `secret/postgresql/admin` ключ `keycloak_password`)
+- Password: из Secret `keycloak-db-credentials` (создаётся вручную или через Vault)
 
 ```bash
 # Проверить доступность PostgreSQL
@@ -744,7 +752,22 @@ database:
   host: postgresql.postgresql.svc.cluster.local  # Замените на ваш адрес PostgreSQL
 ```
 
-**Шаг 3: Создать VaultStaticSecret для Keycloak credentials**
+**Шаг 3: Сохранить секреты Keycloak в Vault**
+
+```bash
+# Сохранить credentials для подключения Keycloak к PostgreSQL
+# Используйте тот же пароль, который указали при создании пользователя keycloak в PostgreSQL
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/keycloak/database \
+  username='keycloak' \
+  password='<ПАРОЛЬ_KEYCLOAK>' \
+  database='keycloak'
+"
+```
+
+**Шаг 4: Создать VaultStaticSecret для Keycloak credentials**
 
 Создайте секреты для Keycloak в namespace `keycloak`:
 
@@ -753,7 +776,6 @@ database:
 kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
 # Создать VaultStaticSecret для пароля базы данных keycloak
-# Трансформирует keycloak_password из postgresql/admin в password для Keycloak
 cat <<EOF | kubectl apply -f -
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultStaticSecret
@@ -764,19 +786,11 @@ spec:
   vaultAuthRef: vault-secrets-operator/default
   mount: secret
   type: kv-v2
-  path: postgresql/admin
+  path: keycloak/database
   refreshAfter: 60s
   destination:
     name: keycloak-db-credentials
     create: true
-    transformation:
-      templates:
-        password:
-          text: '{{ .Secrets.keycloak_password }}'
-        username:
-          text: 'keycloak'
-        database:
-          text: 'keycloak'
 EOF
 
 # Создать VaultStaticSecret для синхронизации admin credentials из Vault
@@ -808,9 +822,8 @@ kubectl get secret keycloak-db-credentials -n keycloak -o jsonpath='{.data.usern
 ```
 
 **Примечание:** 
-- Пароль для пользователя `keycloak` в PostgreSQL хранится в `secret/postgresql/admin` (ключ `keycloak_password`)
-- VaultStaticSecret трансформирует этот ключ в `password` для использования Keycloak
-- Admin credentials для Keycloak хранятся отдельно в `secret/keycloak/admin`
+- Credentials для подключения Keycloak к PostgreSQL хранятся в `secret/keycloak/database`
+- Admin credentials для Keycloak хранятся в `secret/keycloak/admin`
 
 #### 7.3. Создание Keycloak инстанса
 
@@ -3380,13 +3393,16 @@ kubectl get namespaces
 - [ ] ClusterIssuer создан и готов (Status: Ready)
 - [ ] Certificate создан и Secret `gateway-tls-cert` существует
 - [ ] HTTPS listener Gateway активирован (после создания Secret)
-- [ ] Секреты PostgreSQL сохранены в Vault (путь: `secret/postgresql/admin` с ключами: `postgres_password`, `replication_password`, `keycloak_password`)
+- [ ] Секреты PostgreSQL сохранены в Vault (путь: `secret/postgresql/admin` с ключами: `postgres_password`, `replication_password`)
 - [ ] VaultStaticSecret `postgresql-admin-credentials` создан и синхронизирован
 - [ ] Secret `postgresql-admin-credentials` создан Vault Secrets Operator
 - [ ] PostgreSQL установлен через Helm Bitnami и доступен
-- [ ] База данных `keycloak` и пользователь `keycloak` созданы автоматически (через initdb скрипт)
+- [ ] База данных `keycloak` и пользователь `keycloak` созданы вручную в PostgreSQL
+- [ ] Credentials для Keycloak DB сохранены в Vault (путь: `secret/keycloak/database`)
 - [ ] Admin credentials для Keycloak сохранены в Vault (путь: `secret/keycloak/admin`)
+- [ ] VaultStaticSecret `keycloak-db-credentials` создан и синхронизирован в namespace `keycloak`
 - [ ] VaultStaticSecret `keycloak-admin-credentials` создан и синхронизирован в namespace `keycloak`
+- [ ] Secret `keycloak-db-credentials` создан Vault Secrets Operator
 - [ ] Secret `keycloak-admin-credentials` создан Vault Secrets Operator
 - [ ] Адрес PostgreSQL обновлен в `keycloak-instance.yaml`
 - [ ] Keycloak Operator установлен и Keycloak инстанс готов

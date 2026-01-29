@@ -156,15 +156,12 @@ auth:
   ##
   postgresPassword: ""
   ## @param auth.username Name for a custom user to create
-  ## Оставляем пустым - пользователь keycloak создаётся через initdb.scripts
   ##
   username: ""
   ## @param auth.password Password for the custom user to create. Ignored if `auth.existingSecret` is provided
   ##
   password: ""
   ## @param auth.database Name for a custom database to create
-  ## Оставляем пустым - база keycloak создаётся через initdb.scripts
-  ## База postgres создаётся по умолчанию
   ##
   database: ""
   ## @param auth.replicationUsername Name of the replication user
@@ -176,7 +173,6 @@ auth:
   ## @param auth.existingSecret Name of existing secret to use for PostgreSQL credentials. `auth.postgresPassword`, `auth.password`, and `auth.replicationPassword` will be ignored and picked up from this secret. The secret might also contains the key `ldap-password` if LDAP is enabled. `ldap.bind_password` will be ignored and picked from this secret in this case.
   ## Используется Secret, созданный Vault Secrets Operator из Vault
   ## Секрет должен содержать ключи: postgres_password, replication_password
-  ## Пароль для keycloak пользователя задаётся в initdb.scripts через переменную окружения
   ##
   existingSecret: "postgresql-admin-credentials"
   ## @param auth.secretKeys.adminPasswordKey Name of key in existing secret to use for PostgreSQL credentials. Only used when `auth.existingSecret` is set.
@@ -362,32 +358,10 @@ primary:
     postgresqlWalDir: ""
     ## @param primary.initdb.scripts Dictionary of initdb scripts
     ## Specify dictionary of scripts to be run at first boot
-    ## Создание базы данных и пользователя для Keycloak
-    ## Shell скрипт используется для подстановки переменной окружения KEYCLOAK_DB_PASSWORD
+    ## База данных keycloak создаётся через встроенный механизм auth.database
+    ## Дополнительные базы можно создать через Job provisioner (см. manifests/services/postgresql/database-provisioner-job.yaml)
     ##
-    scripts:
-      create-keycloak-db.sh: |
-        #!/bin/bash
-        set -e
-        
-        # Создание базы данных и пользователя для Keycloak
-        psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-          -- Создание базы данных для Keycloak
-          CREATE DATABASE keycloak;
-          
-          -- Создание пользователя keycloak с паролем из переменной окружения
-          CREATE USER keycloak WITH ENCRYPTED PASSWORD '$KEYCLOAK_DB_PASSWORD';
-          
-          -- Предоставление прав на базу данных
-          GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
-        EOSQL
-        
-        # Подключиться к базе keycloak и дать права на схему public
-        psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "keycloak" <<-EOSQL
-          GRANT ALL ON SCHEMA public TO keycloak;
-        EOSQL
-        
-        echo "Keycloak database and user created successfully"
+    scripts: {}
     ## @param primary.initdb.scriptsConfigMap ConfigMap with scripts to be run at first boot
     ## NOTE: This will override `primary.initdb.scripts`
     ##
@@ -431,14 +405,12 @@ primary:
     primaryHost: ""
     primaryPort: ""
   ## @param primary.extraEnvVars Array with extra environment variables to add to PostgreSQL Primary nodes
-  ## Пароль для keycloak пользователя из Secret
+  ## e.g:
+  ## extraEnvVars:
+  ##   - name: FOO
+  ##     value: "bar"
   ##
-  extraEnvVars:
-    - name: KEYCLOAK_DB_PASSWORD
-      valueFrom:
-        secretKeyRef:
-          name: postgresql-admin-credentials
-          key: keycloak_password
+  extraEnvVars: []
   ## @param primary.extraEnvVarsCM Name of existing ConfigMap containing extra env vars for PostgreSQL Primary nodes
   ##
   extraEnvVarsCM: ""
