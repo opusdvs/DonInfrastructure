@@ -811,21 +811,22 @@ kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600
 
 #### 7.4. Создание HTTPRoute для Keycloak
 
-**Важно:** HTTPRoute должен создаваться после установки Gateway и сертификатов (разделы 8-10).
+**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 10).
 
 ```bash
-# Применить HTTPRoute для Keycloak
+# 1. Проверить, что сертификат готов
+kubectl get certificate -n default | grep keycloak
+
+# 2. Применить HTTPRoute
 kubectl apply -f manifests/services/gateway/routes/keycloak-https-route.yaml
 kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
 
-# Проверить HTTPRoute
+# 3. Проверить HTTPRoute
 kubectl get httproute -n keycloak
-kubectl describe httproute keycloak-server -n keycloak
 ```
 
 **Проверка доступа:**
 ```bash
-# Проверить, что Keycloak доступен через Gateway
 curl -I https://keycloak.buildbyte.ru
 ```
 
@@ -851,52 +852,43 @@ kubectl get crd | grep cert-manager
 
 **Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/services/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
-### 9. Создание Gateway
-
-```bash
-# 1. Применить Gateway
-kubectl apply -f manifests/services/gateway/gateway.yaml
-
-# 2. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway service-gateway -n default
-```
-
-**Примечание:** 
-- HTTP listener будет работать сразу после создания Gateway
-- HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на шаге 7)
-- Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
-
-
-### 10. Создание ClusterIssuer и сертификата
+### 9. Создание ClusterIssuer
 
 ```bash
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-# ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
 kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
 
 # 2. Проверить ClusterIssuer
 kubectl get clusterissuer
 kubectl describe clusterissuer letsencrypt-prod
-
-# 3. Применить Certificate
-kubectl apply -f manifests/services/cert-manager/gateway-certificate.yaml
-
-# 4. Проверить статус Certificate
-kubectl get certificate -n default
-kubectl describe certificate gateway-tls-cert -n default
-
-# 5. Дождаться создания Secret (может занять несколько минут)
-# Cert-manager автоматически создаст Secret gateway-tls-cert после успешной выдачи сертификата
-watch kubectl get secret gateway-tls-cert -n default
 ```
 
 **Важно:** 
 - Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/services/cert-manager/cluster-issuer.yaml`
-- Gateway должен быть создан до ClusterIssuer, так как ClusterIssuer использует Gateway для HTTP-01 challenge
-- После создания Secret `gateway-tls-cert`, HTTPS listener Gateway автоматически активируется
-- Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
-- При добавлении новых приложений обновите `dnsNames` в `manifests/services/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
+- ClusterIssuer создаётся ДО Gateway
+
+### 10. Создание Gateway
+
+```bash
+# 1. Применить Gateway с HTTPS listeners
+# cert-manager автоматически создаст сертификаты для каждого hostname
+kubectl apply -f manifests/services/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway service-gateway -n default
+
+# 3. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
+kubectl get certificate -n default
+
+# 4. Дождаться готовности сертификатов
+kubectl get certificate -n default -w
+```
+
+**Примечание:** 
+- Gateway содержит аннотацию `cert-manager.io/cluster-issuer: letsencrypt-prod`
+- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener)
 
 ### 11. Установка Argo CD
 
@@ -2146,36 +2138,110 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 **Подробная документация:**
 - См. конфигурацию в `helm/services/jaeger/jaeger-values.yaml`
 
-### 17. Создание HTTPRoute для приложений
+### 17. Проверка автоматических сертификатов
 
-**Важно:** HTTPRoute должны создаваться ПОСЛЕ установки приложений, так как они ссылаются на сервисы Argo CD и Jenkins.
+**Важно:** Сертификаты создаются автоматически при применении Gateway благодаря аннотации `cert-manager.io/cluster-issuer`.
+
+Gateway уже применён в разделе 9. cert-manager автоматически создаёт Certificate для каждого HTTPS listener.
 
 ```bash
-# 1. Применить HTTPRoute для Argo CD
-kubectl apply -f manifests/services/gateway/routes/argocd-https-route.yaml
-kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
+# Проверить автоматически созданные сертификаты
+kubectl get certificate -n default
 
-# 2. Применить HTTPRoute для Jenkins
-kubectl apply -f manifests/services/gateway/routes/jenkins-https-route.yaml
-kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
+# Дождаться готовности всех сертификатов (может занять 1-2 минуты)
+kubectl get certificate -n default -w
 
-# 3. Применить HTTPRoute для Grafana
-kubectl apply -f manifests/services/gateway/routes/grafana-https-route.yaml
-kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
+# Проверить созданные Secret
+kubectl get secret -n default | grep tls
 
-# 4. Применить HTTPRoute для Keycloak
+# Проверить статус Gateway (все listeners должны быть Ready)
+kubectl describe gateway service-gateway -n default
+```
+
+**Автоматически создаваемые сертификаты:**
+| Hostname | Secret |
+|----------|--------|
+| keycloak.buildbyte.ru | keycloak-tls-cert |
+| argo.buildbyte.ru | argocd-tls-cert |
+| jenkins.buildbyte.ru | jenkins-tls-cert |
+| grafana.buildbyte.ru | grafana-tls-cert |
+| vault.buildbyte.ru | vault-tls-cert |
+
+**Проверка готовности:**
+```bash
+# Все сертификаты должны иметь статус Ready=True
+kubectl get certificate -n default -o wide
+```
+
+### 18. Создание HTTPRoute для приложений
+
+**Важно:** HTTPRoute создаются после готовности сертификатов (раздел 17).
+
+#### 18.1. HTTPRoute для Keycloak
+
+```bash
 kubectl apply -f manifests/services/gateway/routes/keycloak-https-route.yaml
 kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
 
-# 5. Проверить HTTPRoute
-kubectl get httproute -A
-kubectl describe httproute argocd-server -n argocd
-kubectl describe httproute jenkins-server -n jenkins
-kubectl describe httproute grafana-server -n kube-prometheus-stack
-kubectl describe httproute keycloak-server -n keycloak
+# Проверить
+kubectl get httproute -n keycloak
+```
 
-# 6. Проверить, что HTTPRoute привязаны к Gateway
-kubectl describe gateway service-gateway -n default | grep -A 20 "Listeners:"
+#### 18.2. HTTPRoute для Argo CD
+
+```bash
+kubectl apply -f manifests/services/gateway/routes/argocd-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n argocd
+```
+
+#### 18.3. HTTPRoute для Jenkins
+
+```bash
+kubectl apply -f manifests/services/gateway/routes/jenkins-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n jenkins
+```
+
+#### 18.4. HTTPRoute для Grafana
+
+```bash
+kubectl apply -f manifests/services/gateway/routes/grafana-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n kube-prometheus-stack
+```
+
+#### 18.5. HTTPRoute для Vault
+
+```bash
+kubectl apply -f manifests/services/gateway/routes/vault-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n vault
+```
+
+#### 18.6. Проверка всех HTTPRoute
+
+```bash
+# Проверить все HTTPRoute
+kubectl get httproute -A
+
+# Проверить статус Gateway
+kubectl describe gateway service-gateway -n default | grep -A 30 "Listeners:"
+
+# Проверить доступность сервисов
+curl -I https://keycloak.buildbyte.ru
+curl -I https://argo.buildbyte.ru
+curl -I https://jenkins.buildbyte.ru
+curl -I https://grafana.buildbyte.ru
+curl -I https://vault.buildbyte.ru
 ```
 
 ## Развертывание и настройка Dev кластера

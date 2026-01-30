@@ -1,33 +1,100 @@
 ---
 # Gateway ресурс для развертывания Gateway API с поддержкой HTTPS
-# Использует Secret с TLS сертификатом
-# Secret может быть создан вручную или автоматически через cert-manager (см. cert-manager/gateway-certificate.yaml)
+# 
+# cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+# благодаря аннотации cert-manager.io/cluster-issuer
+#
+# Порядок:
+#   1. Создать ClusterIssuer (см. cert-manager/cluster-issuer.yaml)
+#   2. Применить этот Gateway
+#   3. cert-manager автоматически создаст сертификаты для каждого hostname
+#
+# Проверка:
+#   kubectl get certificate -n default
+#   kubectl get secret -n default | grep tls
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: service-gateway
   annotations:
+    # cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   gatewayClassName: nginx
   listeners:
+    # HTTP listener для HTTP-01 challenge и редиректов
     - name: http
       protocol: HTTP
       port: 80
-      # hostname не указан - позволяет обрабатывать все hostnames для HTTP-01 challenge
-      # cert-manager создает HTTPRoute для /.well-known/acme-challenge/ без hostname
       allowedRoutes:
         namespaces:
-          from: All
-    - name: https
+          from: All    
+    # HTTPS listener для Keycloak
+    - name: https-keycloak
       protocol: HTTPS
       port: 443
-      # hostname не указан - позволяет обрабатывать все hostnames через HTTPRoute
-      # Каждый HTTPRoute указывает свой hostname (argo.buildbyte.ru, jenkins.buildbyte.ru и т.д.)
+      hostname: keycloak.buildbyte.ru
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: gateway-tls-cert # Secret создается автоматически cert-manager через Certificate ресурс
+            name: keycloak-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All
+    
+    # HTTPS listener для Argo CD
+    - name: https-argocd
+      protocol: HTTPS
+      port: 443
+      hostname: argo.buildbyte.ru
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: argocd-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All
+    
+    # HTTPS listener для Jenkins
+    - name: https-jenkins
+      protocol: HTTPS
+      port: 443
+      hostname: jenkins.buildbyte.ru
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: jenkins-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All
+    
+    # HTTPS listener для Grafana
+    - name: https-grafana
+      protocol: HTTPS
+      port: 443
+      hostname: grafana.buildbyte.ru
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: grafana-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All
+    
+    # HTTPS listener для Vault
+    - name: https-vault
+      protocol: HTTPS
+      port: 443
+      hostname: vault.buildbyte.ru
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: vault-tls-cert
       allowedRoutes:
         namespaces:
           from: All

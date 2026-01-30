@@ -12,7 +12,7 @@ spec:
   parentRefs:
     - name: service-gateway
       namespace: default
-      sectionName: https  # HTTPS listener (порт 443)
+      sectionName: https-jenkins  # HTTPS listener для Jenkins
   rules:
     - matches:
         - path:
