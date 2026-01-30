@@ -1117,6 +1117,32 @@ configs:
 - RBAC настраивается на основе групп из Keycloak через `policy.csv`
 - **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/services/argocd/OIDC_TROUBLESHOOTING.md`
 
+#### 11.5. Создание HTTPRoute для Argo CD
+
+```bash
+# 1. Применить HTTPRoute для HTTPS
+kubectl apply -f manifests/services/gateway/routes/argocd-https-route.yaml
+
+# 2. Применить HTTPRoute для редиректа HTTP → HTTPS
+kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
+
+# 3. Проверить HTTPRoute
+kubectl get httproute -n argocd
+```
+
+**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 5).
+
+**Проверка:**
+```bash
+# Проверить статус HTTPRoute
+kubectl describe httproute argocd-server -n argocd
+
+# Проверить доступность (должен вернуть HTTP 200 или редирект на логин)
+curl -I https://argo.buildbyte.ru/
+```
+
+После настройки HTTPRoute Argo CD будет доступен по адресу: `https://argo.buildbyte.ru`
+
 ### 12. Установка Jenkins
 
 #### 12.1. Сохранение секрета администратора Jenkins в Vault

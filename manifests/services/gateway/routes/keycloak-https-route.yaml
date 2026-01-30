@@ -19,6 +19,6 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: keycloak-service  # Имя сервиса, созданного Keycloak Operator
-          port: 8080  # Порт Keycloak (по умолчанию 8080)
+        - name: keycloak-service  # Имя сервиса, созданного Keycloak Operator (формат: <keycloak-name>-service)
+          port: 8080  # HTTP порт Keycloak (Gateway терминирует TLS)
           weight: 1
