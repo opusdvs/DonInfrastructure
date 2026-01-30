@@ -1005,9 +1005,42 @@ vault kv put secret/jenkins/oidc client-id=jenkins client-secret='$JENKINS_CLIEN
    - Add to access token: `ON`
 5. Нажмите **Save**
 
-**Проверка:**
+**9. Создание VaultStaticSecret для OIDC клиентов:**
+
+После сохранения client secrets в Vault, создайте VaultStaticSecret для синхронизации в Kubernetes:
+
 ```bash
-# Проверить секреты в Vault
+# Создать namespace'ы если ещё не созданы
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
+
+# Применить VaultStaticSecret для Argo CD OIDC
+kubectl apply -f manifests/services/argocd/argocd-oidc-vaultstaticsecret.yaml
+
+# Применить VaultStaticSecret для Grafana OIDC
+kubectl apply -f manifests/services/grafana/grafana-oidc-vaultstaticsecret.yaml
+
+# Применить VaultStaticSecret для Jenkins OIDC
+kubectl apply -f manifests/services/jenkins/jenkins-oidc-vaultstaticsecret.yaml
+```
+
+**Проверка синхронизации:**
+```bash
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret -A | grep oidc
+
+# Проверить созданные Kubernetes Secrets
+kubectl get secret argocd-oidc-secret -n argocd
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
+kubectl get secret jenkins-oidc-secret -n jenkins
+
+# Проверить содержимое секрета (например, для Argo CD)
+kubectl get secret argocd-oidc-secret -n argocd -o jsonpath='{.data.client-id}' | base64 -d
+```
+
+**Проверка секретов в Vault:**
+```bash
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='\$(cat /tmp/vault-root-token.txt)'
