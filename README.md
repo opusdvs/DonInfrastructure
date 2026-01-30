@@ -278,26 +278,42 @@ kubectl describe clusterissuer letsencrypt-prod
 
 ### 5. Создание Gateway
 
+**Важно:** Для получения сертификатов через HTTP-01 challenge необходимо сначала создать HTTP redirect routes. cert-manager создаст временные HTTPRoute для `/.well-known/acme-challenge/`, которые будут иметь приоритет над redirect routes.
+
 ```bash
-# 1. Применить Gateway с HTTPS listeners
-# cert-manager автоматически создаст сертификаты для каждого hostname
+# 1. Создать namespace'ы для сервисов (если ещё не созданы)
+kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
+
+# 2. Применить HTTP redirect routes (нужны для HTTP-01 challenge)
+kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
+kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
+
+# 3. Применить Gateway с HTTPS listeners
 kubectl apply -f manifests/services/gateway/gateway.yaml
 
-# 2. Проверить статус Gateway
+# 4. Проверить статус Gateway
 kubectl get gateway -n default
 kubectl describe gateway service-gateway -n default
 
-# 3. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
+# 5. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
 kubectl get certificate -n default
 
-# 4. Дождаться готовности сертификатов
+# 6. Дождаться готовности сертификатов
 kubectl get certificate -n default -w
 ```
 
 **Примечание:** 
 - Gateway содержит аннотацию `cert-manager.io/cluster-issuer: letsencrypt-prod`
 - cert-manager автоматически создаёт Certificate для каждого HTTPS listener
-- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener)
+- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener и HTTPRoute)
+- HTTP redirect routes позволяют cert-manager обрабатывать ACME challenge запросы
 
 ### 6. Установка CSI драйвера в панели Timeweb Cloud
 
@@ -1114,158 +1130,7 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.pas
 # Примечание: Это bcrypt хеш, для использования нужно знать исходный пароль
 ```
 
-#### 11.4. Настройка OIDC для Argo CD через Keycloak
-
-**Важно:** Перед настройкой OIDC убедитесь, что:
-- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
-- В Keycloak создан клиент `argocd` с правильными redirect URIs
-- Получен Client Secret для клиента `argocd`
-
-**Шаг 1: Создать клиент в Keycloak**
-
-1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
-2. Выберите Realm (например, `master`)
-3. Перейдите в **Clients** → **Create client**
-4. Настройте клиент:
-   - **Client ID:** `argocd`
-   - **Client protocol:** `openid-connect`
-   - **Access Type:** `confidential`
-   - **Valid Redirect URIs:** 
-     - `https://argo.buildbyte.ru/api/dex/callback`
-     - `https://argo.buildbyte.ru/auth/callback`
-   - **Web Origins:** `https://argo.buildbyte.ru`
-5. Сохраните клиент и перейдите на вкладку **Credentials**
-6. Скопируйте **Secret** (Client Secret)
-
-**Шаг 2: Сохранить Client Secret в Vault**
-
-```bash
-# Установить переменные для работы с Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-
-# Убедиться, что KV v2 секретный движок включен
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-"
-
-# Сохранить Client Secret для Argo CD OIDC
-# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
-# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/argocd/oidc \
-  client_secret='<ВАШ_CLIENT_SECRET>'
-"
-
-# Проверить, что секрет сохранен правильно
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/argocd/oidc
-"
-```
-
-**Шаг 3: Создать VaultStaticSecret для синхронизации Client Secret**
-
-VaultStaticSecret синхронизирует Client Secret из Vault в отдельный секрет `argocd-oidc-secret`, который используется Argo CD для OIDC аутентификации.
-
-```bash
-# Создать VaultStaticSecret для синхронизации OIDC client-secret
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: argocd-oidc-secret
-  namespace: argocd
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: argocd/oidc
-  refreshAfter: 60s
-  destination:
-    name: argocd-oidc-secret
-    create: true
-EOF
-
-# Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret argocd-oidc-secret -n argocd
-kubectl describe vaultstaticsecret argocd-oidc-secret -n argocd
-
-# Проверить созданный Secret
-kubectl get secret argocd-oidc-secret -n argocd
-
-# Проверить значение Client Secret (должно быть реальное значение)
-kubectl get secret argocd-oidc-secret -n argocd -o jsonpath='{.data.client_secret}' | base64 -d && echo
-
-# Если синхронизация не прошла, проверьте логи Vault Secrets Operator:
-kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i argocd
-```
-
-**Важно:**
-- VaultStaticSecret создает отдельный секрет `argocd-oidc-secret` с ключом `client_secret`
-- Ключ `client_secret` должен содержать реальное значение Client Secret из Keycloak
-- Если синхронизация не прошла, проверьте:
-  - Существует ли секрет в Vault по пути `secret/argocd/oidc` с ключом `client_secret`
-  - Настроен ли VaultAuth для Vault Secrets Operator
-  - Работает ли Vault Secrets Operator
-
-**Шаг 4: Обновить Argo CD с OIDC конфигурацией**
-
-OIDC конфигурация уже настроена в `helm/services/argocd/argocd-values.yaml`. Обновите Argo CD:
-
-```bash
-# Обновить Argo CD с OIDC конфигурацией
-helm upgrade argocd argo/argo-cd \
-  --namespace argocd \
-  -f helm/services/argocd/argocd-values.yaml \
-  --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
-
-# Проверить, что Argo CD перезапустился
-kubectl get pods -n argocd
-kubectl logs -f deployment/argocd-server -n argocd | grep -i oidc
-```
-
-**Шаг 5: Настроить RBAC в Argo CD**
-
-RBAC уже настроен в `helm/services/argocd/argocd-values.yaml`. Группа `ArgoCDAdmins` из Keycloak привязана к встроенной роли `role:admin`, которая дает полные права администратора в Argo CD.
-
-Текущая конфигурация:
-```yaml
-configs:
-  rbac:
-    # Настройка RBAC на основе групп из Keycloak
-    # Группа ArgoCDAdmins должна быть создана в Keycloak
-    policy.csv: |
-      # Привязать группу ArgoCDAdmins из Keycloak к встроенной роли admin
-      # Роль admin дает полные права администратора в Argo CD
-      g, "ArgoCDAdmins", role:admin
-```
-
-**Важно:**
-- Группа `ArgoCDAdmins` должна быть создана в Keycloak
-- Пользователи должны быть добавлены в эту группу
-- Встроенная роль `role:admin` предоставляет все административные права в Argo CD
-- Если нужно добавить другие группы или роли, отредактируйте `policy.csv` в `helm/services/argocd/argocd-values.yaml`
-
-**Проверка OIDC:**
-
-1. Откройте Argo CD: `https://argo.buildbyte.ru`
-2. Должна появиться кнопка **"LOG IN VIA KEYCLOAK"** или **"LOG IN VIA OIDC"**
-3. Выполните вход через Keycloak
-4. Проверьте, что пользователь успешно аутентифицирован
-
-**Важно:**
-- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/argocd/argocd-values.yaml`). Если используется другой Realm, измените `issuer` в `helm/services/argocd/argocd-values.yaml`
-- Client Secret синхронизируется из Vault через Vault Secrets Operator в секрет `argocd-oidc-secret`
-- RBAC настраивается на основе групп из Keycloak через `policy.csv`
-- **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/services/argocd/OIDC_TROUBLESHOOTING.md`
-
-#### 11.5. Создание HTTPRoute для Argo CD
+#### 11.4. Создание HTTPRoute для Argo CD
 
 ```bash
 # 1. Применить HTTPRoute для HTTPS

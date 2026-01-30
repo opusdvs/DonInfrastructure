@@ -4,10 +4,17 @@
 # cert-manager автоматически создаёт Certificate для каждого HTTPS listener
 # благодаря аннотации cert-manager.io/cluster-issuer
 #
+# ВАЖНО: Для получения сертификатов через HTTP-01 challenge необходимо:
+#   1. Сначала применить HTTP redirect routes (они позволят cert-manager 
+#      создать временные HTTPRoute для ACME challenge)
+#   2. cert-manager создаст HTTPRoute для /.well-known/acme-challenge/
+#      который будет иметь приоритет над redirect routes
+#
 # Порядок:
 #   1. Создать ClusterIssuer (см. cert-manager/cluster-issuer.yaml)
-#   2. Применить этот Gateway
-#   3. cert-manager автоматически создаст сертификаты для каждого hostname
+#   2. Применить HTTP redirect routes для всех hostname
+#   3. Применить этот Gateway
+#   4. cert-manager автоматически создаст сертификаты для каждого hostname
 #
 # Проверка:
 #   kubectl get certificate -n default

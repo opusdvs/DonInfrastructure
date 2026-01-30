@@ -232,13 +232,14 @@ configs:
     #         - name: your-github-org
 
     # OIDC configuration for Keycloak
-    # Client Secret хранится в секрете argocd-oidc-secret (синхронизируется из Vault через External Secrets Operator)
-    # Секрет добавляется в argocd-secret через configs.secret.extra
+    # Client Secret читается из секрета argocd-oidc-secret
+    # Формат: $<secret-name>:<key>
+    # ВАЖНО: Секрет должен иметь лейбл app.kubernetes.io/part-of=argocd
     oidc.config: |
       name: Keycloak
       issuer: https://keycloak.buildbyte.ru/realms/services
       clientID: argocd
-      clientSecret: $oidc.keycloak.clientSecret
+      clientSecret: $argocd-oidc-secret:client-secret
       # Request groups claim for RBAC
       requestedIDTokenClaims:
         groups:
