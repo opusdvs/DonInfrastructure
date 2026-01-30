@@ -241,8 +241,65 @@ kubectl get pods -n nginx-gateway
 kubectl get gatewayclass
 ```
 
+### 3. Установка cert-manager
 
-### 3. Установка CSI драйвера в панели Timeweb Cloud
+```bash
+# 1. Добавить Helm репозиторий
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+# 2. Установить cert-manager с поддержкой Gateway API
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  -f helm/services/cert-managar/cert-manager-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n cert-manager
+kubectl get crd | grep cert-manager
+```
+
+**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/services/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+
+### 4. Создание ClusterIssuer
+
+```bash
+# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
+kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
+
+# 2. Проверить ClusterIssuer
+kubectl get clusterissuer
+kubectl describe clusterissuer letsencrypt-prod
+```
+
+**Важно:** 
+- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/services/cert-manager/cluster-issuer.yaml`
+- ClusterIssuer создаётся ДО Gateway
+
+### 5. Создание Gateway
+
+```bash
+# 1. Применить Gateway с HTTPS listeners
+# cert-manager автоматически создаст сертификаты для каждого hostname
+kubectl apply -f manifests/services/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway service-gateway -n default
+
+# 3. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
+kubectl get certificate -n default
+
+# 4. Дождаться готовности сертификатов
+kubectl get certificate -n default -w
+```
+
+**Примечание:** 
+- Gateway содержит аннотацию `cert-manager.io/cluster-issuer: letsencrypt-prod`
+- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener)
+
+### 6. Установка CSI драйвера в панели Timeweb Cloud
 
 CSI драйвер для сетевых дисков Timeweb Cloud устанавливается через Helm chart:
 
@@ -267,13 +324,13 @@ kubectl get storageclass | grep network-drives
 
 **Примечание:** Установка через панель Timeweb Cloud может отличаться. Следуйте инструкциям в документации Timeweb Cloud для установки CSI драйвера через веб-интерфейс.
 
-### 4. Установка Vault через Helm
+### 7. Установка Vault через Helm
 
 **Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через Vault Secrets Operator.
 
 Vault устанавливается через официальный Helm chart от HashiCorp.
 
-#### 4.1. Установка Vault
+#### 7.1. Установка Vault
 
 ```bash
 # 1. Добавить Helm репозиторий HashiCorp
@@ -306,7 +363,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault -n vault 
 - Standalone режим не поддерживает High Availability (HA)
 - В продакшене будет настроен HA режим с Raft storage и 3 репликами
 
-#### 4.2. Инициализация и разблокировка Vault
+#### 7.2. Инициализация и разблокировка Vault
 
 После установки Vault необходимо инициализировать и разблокировать его:
 
@@ -336,7 +393,7 @@ cat /tmp/vault-root-token.txt
 - После перезапуска Vault потребуется повторное разблокирование (unseal)
 - Для автоматического unsealing в продакшене будет настроен auto-unseal через KMS
 
-### 5. Установка Vault Secrets Operator
+### 8. Установка Vault Secrets Operator
 
 **Важно:** Vault Secrets Operator должен быть установлен после Vault, так как он синхронизирует секреты из Vault в Kubernetes Secrets.
 
@@ -374,7 +431,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-o
 - `VaultDynamicSecret` — динамические секреты (database credentials и т.д.)
 - `VaultPKISecret` — PKI сертификаты
 
-#### 5.1. Настройка Kubernetes Auth в Vault для Vault Secrets Operator
+#### 8.1. Настройка Kubernetes Auth в Vault для Vault Secrets Operator
 
 Перед созданием VaultAuth необходимо настроить Kubernetes auth в Vault.
 
@@ -449,7 +506,7 @@ vault read auth/kubernetes/role/vault-secrets-operator
 "
 ```
 
-#### 5.2. Проверка VaultConnection и VaultAuth
+#### 8.2. Проверка VaultConnection и VaultAuth
 
 При установке Vault Secrets Operator с values файлом `helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml`, default VaultConnection и VaultAuth создаются автоматически.
 
@@ -501,13 +558,13 @@ EOF
 
 **Важно:**
 - **Vault должен быть разблокирован (unsealed)** перед использованием VaultAuth
-- Kubernetes auth в Vault должен быть настроен перед использованием VaultAuth (см. раздел 5.1)
+- Kubernetes auth в Vault должен быть настроен перед использованием VaultAuth (см. раздел 8.1)
 - Роль `vault-secrets-operator` в Vault должна иметь доступ к путям секретов, которые будут использоваться
 - Default VaultConnection использует адрес `http://vault.vault.svc.cluster.local:8200`
 - Default VaultAuth разрешает использование из всех namespace (`allowedNamespaces: ["*"]`)
 - После настройки VaultAuth можно создавать VaultStaticSecret ресурсы для синхронизации секретов
 
-#### 5.3. Пример использования VaultStaticSecret
+#### 8.3. Пример использования VaultStaticSecret
 
 После настройки VaultAuth можно создавать VaultStaticSecret для синхронизации секретов:
 
@@ -541,11 +598,11 @@ kubectl exec -it vault-0 -n vault -- vault status
 # cat /tmp/vault-unseal-key.txt
 ```
 
-### 6. Установка PostgreSQL
+### 9. Установка PostgreSQL
 
 **Важно:** PostgreSQL должен быть установлен перед Keycloak, так как Keycloak использует PostgreSQL в качестве базы данных.
 
-#### 6.1. Создание секретов в Vault для PostgreSQL
+#### 9.1. Создание секретов в Vault для PostgreSQL
 
 Перед установкой PostgreSQL необходимо создать секреты в Vault:
 
@@ -606,7 +663,7 @@ vault kv put secret/keycloak/admin \
 - Пароли должны быть достаточно длинными (минимум 16 символов)
 - Сохраните пароли в безопасном месте (например, в менеджере паролей)
 
-#### 6.2. Создание VaultStaticSecret для PostgreSQL
+#### 9.2. Создание VaultStaticSecret для PostgreSQL
 
 Создайте VaultStaticSecret для синхронизации секретов из Vault:
 
@@ -625,7 +682,7 @@ kubectl describe vaultstaticsecret postgresql-admin-credentials -n postgresql
 kubectl get secret postgresql-admin-credentials -n postgresql
 ```
 
-#### 6.3. Установка PostgreSQL через Helm Bitnami
+#### 9.3. Установка PostgreSQL через Helm Bitnami
 
 ```bash
 # 1. Добавить Helm репозиторий Bitnami
@@ -667,9 +724,9 @@ kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
 # \q - выход
 ```
 
-### 7. Установка Keycloak Operator
+### 10. Установка Keycloak Operator
 
-#### 7.1. Установка оператора
+#### 10.1. Установка оператора
 
 ```bash
 # 1. Установить CRDs Keycloak Operator
@@ -688,7 +745,7 @@ kubectl get pods -n keycloak
 kubectl wait --for=condition=available deployment/keycloak-operator -n keycloak --timeout=300s
 ```
 
-#### 7.2. Подготовка PostgreSQL для Keycloak
+#### 10.2. Подготовка PostgreSQL для Keycloak
 
 Keycloak использует внешний PostgreSQL для хранения данных. Необходимо создать базу данных, пользователя и секреты.
 
@@ -792,7 +849,7 @@ database:
 - Пароль: из Kubernetes Secret `keycloak-db-credentials` (синхронизирован из Vault)
 - Admin credentials: из Kubernetes Secret `keycloak-admin-credentials` (синхронизирован из Vault)
 
-#### 7.3. Создание Keycloak инстанса
+#### 10.3. Создание Keycloak инстанса
 
 ```bash
 # 1. Создать Keycloak инстанс
@@ -809,9 +866,9 @@ kubectl logs -f keycloak-0 -n keycloak | grep -i postgres
 kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600s
 ```
 
-#### 7.4. Создание HTTPRoute для Keycloak
+#### 10.4. Создание HTTPRoute для Keycloak
 
-**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 10).
+**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 5).
 
 ```bash
 # 1. Проверить, что сертификат готов
@@ -831,64 +888,6 @@ curl -I https://keycloak.buildbyte.ru
 ```
 
 После настройки HTTPRoute Keycloak будет доступен по адресу: `https://keycloak.buildbyte.ru`
-
-### 8. Установка cert-manager
-
-```bash
-# 1. Добавить Helm репозиторий
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-# 2. Установить cert-manager с поддержкой Gateway API
-helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  -f helm/services/cert-managar/cert-manager-values.yaml
-
-# 3. Проверить установку
-kubectl get pods -n cert-manager
-kubectl get crd | grep cert-manager
-```
-
-**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/services/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
-
-### 9. Создание ClusterIssuer
-
-```bash
-# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
-
-# 2. Проверить ClusterIssuer
-kubectl get clusterissuer
-kubectl describe clusterissuer letsencrypt-prod
-```
-
-**Важно:** 
-- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/services/cert-manager/cluster-issuer.yaml`
-- ClusterIssuer создаётся ДО Gateway
-
-### 10. Создание Gateway
-
-```bash
-# 1. Применить Gateway с HTTPS listeners
-# cert-manager автоматически создаст сертификаты для каждого hostname
-kubectl apply -f manifests/services/gateway/gateway.yaml
-
-# 2. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway service-gateway -n default
-
-# 3. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
-kubectl get certificate -n default
-
-# 4. Дождаться готовности сертификатов
-kubectl get certificate -n default -w
-```
-
-**Примечание:** 
-- Gateway содержит аннотацию `cert-manager.io/cluster-issuer: letsencrypt-prod`
-- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
-- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener)
 
 ### 11. Установка Argo CD
 
@@ -1956,8 +1955,8 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
 Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
 
 **Важно:** 
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 12), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
-- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 14) и перед настройкой Fluent Bit в dev кластере (раздел 7), так как Fluent Bit будет отправлять логи в Loki.
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 14), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
+- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 15) и перед настройкой Fluent Bit в dev кластере, так как Fluent Bit будет отправлять логи в Loki.
 
 #### 13.1. Установка Loki через Helm
 
@@ -3270,7 +3269,7 @@ kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller -
 - `destination.namespace: donweather` - namespace в dev кластере, где будет развернуто приложение
 - `syncPolicy.automated` включает автоматическую синхронизацию при изменениях в Git
 - `syncOptions: CreateNamespace=true` автоматически создает namespace, если он не существует
-- Если приложение использует приватные Docker образы, убедитесь, что Docker Registry credentials настроены в namespace `donweather` (см. раздел 10.7)
+- Если приложение использует приватные Docker образы, убедитесь, что Docker Registry credentials настроены в namespace `donweather` (см. раздел 12.6)
 
 **Диагностика, если Application не синхронизируется:**
 
@@ -3515,7 +3514,7 @@ curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на htt
 
 ## Дополнительная документация
 
-- **Настройка Kubernetes Auth в Vault для Vault Secrets Operator:** см. раздел 5.1 в этом документе
+- **Настройка Kubernetes Auth в Vault для Vault Secrets Operator:** см. раздел 8.1 в этом документе
 - **Настройка Keycloak Authentication для Jenkins:** [`helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md)
 
 ## Важные замечания
