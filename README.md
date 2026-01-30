@@ -889,6 +889,134 @@ curl -I https://keycloak.buildbyte.ru
 
 После настройки HTTPRoute Keycloak будет доступен по адресу: `https://keycloak.buildbyte.ru`
 
+#### 10.5. Создание Realm и клиентов для сервисов
+
+После успешного развертывания Keycloak необходимо создать Realm и OIDC клиенты для сервисов.
+
+**1. Вход в Admin Console:**
+```
+URL: https://keycloak.buildbyte.ru/admin
+Логин: admin (из секрета keycloak-admin-credentials)
+Пароль: из секрета keycloak-admin-credentials
+```
+
+**2. Создание Realm `services`:**
+1. В левом верхнем углу нажмите на выпадающий список realm (по умолчанию "master")
+2. Нажмите **"Create realm"**
+3. Введите имя: `services`
+4. Нажмите **"Create"**
+
+**3. Создание клиента для Argo CD:**
+1. Перейдите в **Clients** → **Create client**
+2. **General Settings:**
+   - Client type: `OpenID Connect`
+   - Client ID: `argocd`
+   - Name: `Argo CD`
+3. **Capability config:**
+   - Client authentication: `ON`
+   - Authorization: `OFF`
+   - Authentication flow: включите `Standard flow` и `Direct access grants`
+4. **Login settings:**
+   - Root URL: `https://argo.buildbyte.ru`
+   - Home URL: `https://argo.buildbyte.ru`
+   - Valid redirect URIs: `https://argo.buildbyte.ru/auth/callback`
+   - Web origins: `https://argo.buildbyte.ru`
+5. Нажмите **Save**
+6. Перейдите во вкладку **Credentials** и скопируйте **Client secret**
+
+**4. Сохранение Client Secret в Vault:**
+```bash
+# Сохранить client secret для Argo CD
+ARGOCD_CLIENT_SECRET="<скопированный_secret>"
+
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$(cat /tmp/vault-root-token.txt)'
+vault kv put secret/argocd/oidc client-id=argocd client-secret='$ARGOCD_CLIENT_SECRET'
+"
+```
+
+**5. Создание клиента для Grafana:**
+1. Перейдите в **Clients** → **Create client**
+2. **General Settings:**
+   - Client type: `OpenID Connect`
+   - Client ID: `grafana`
+   - Name: `Grafana`
+3. **Capability config:**
+   - Client authentication: `ON`
+   - Authentication flow: включите `Standard flow`
+4. **Login settings:**
+   - Root URL: `https://grafana.buildbyte.ru`
+   - Valid redirect URIs: `https://grafana.buildbyte.ru/login/generic_oauth`
+   - Web origins: `https://grafana.buildbyte.ru`
+5. Нажмите **Save**
+6. Сохраните Client secret в Vault:
+```bash
+GRAFANA_CLIENT_SECRET="<скопированный_secret>"
+
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$(cat /tmp/vault-root-token.txt)'
+vault kv put secret/grafana/oidc client-id=grafana client-secret='$GRAFANA_CLIENT_SECRET'
+"
+```
+
+**6. Создание клиента для Jenkins:**
+1. Перейдите в **Clients** → **Create client**
+2. **General Settings:**
+   - Client type: `OpenID Connect`
+   - Client ID: `jenkins`
+   - Name: `Jenkins`
+3. **Capability config:**
+   - Client authentication: `ON`
+   - Authentication flow: включите `Standard flow`
+4. **Login settings:**
+   - Root URL: `https://jenkins.buildbyte.ru`
+   - Valid redirect URIs: `https://jenkins.buildbyte.ru/securityRealm/finishLogin`
+   - Web origins: `https://jenkins.buildbyte.ru`
+5. Нажмите **Save**
+6. Сохраните Client secret в Vault:
+```bash
+JENKINS_CLIENT_SECRET="<скопированный_secret>"
+
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$(cat /tmp/vault-root-token.txt)'
+vault kv put secret/jenkins/oidc client-id=jenkins client-secret='$JENKINS_CLIENT_SECRET'
+"
+```
+
+**7. Создание групп и пользователей (опционально):**
+1. Перейдите в **Groups** → **Create group**
+2. Создайте группы: `admins`, `developers`, `viewers`
+3. Перейдите в **Users** → **Add user**
+4. Создайте пользователей и назначьте их в группы
+
+**8. Настройка Group Mapper для клиентов:**
+Для передачи групп в токен (необходимо для RBAC в Argo CD):
+1. Перейдите в **Clients** → выберите клиент (например, `argocd`)
+2. Вкладка **Client scopes** → нажмите на `argocd-dedicated`
+3. **Add mapper** → **By configuration** → **Group Membership**
+4. Настройки:
+   - Name: `groups`
+   - Token Claim Name: `groups`
+   - Full group path: `OFF`
+   - Add to ID token: `ON`
+   - Add to access token: `ON`
+5. Нажмите **Save**
+
+**Проверка:**
+```bash
+# Проверить секреты в Vault
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$(cat /tmp/vault-root-token.txt)'
+vault kv get secret/argocd/oidc
+vault kv get secret/grafana/oidc
+vault kv get secret/jenkins/oidc
+"
+```
+
 ### 11. Установка Argo CD
 
 **Важно:** Установите приложения ПЕРЕД созданием HTTPRoute, так как HTTPRoute ссылаются на сервисы этих приложений.
