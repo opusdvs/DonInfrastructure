@@ -809,6 +809,28 @@ kubectl logs -f keycloak-0 -n keycloak | grep -i postgres
 kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600s
 ```
 
+#### 7.4. Создание HTTPRoute для Keycloak
+
+**Важно:** HTTPRoute должен создаваться после установки Gateway и сертификатов (разделы 8-10).
+
+```bash
+# Применить HTTPRoute для Keycloak
+kubectl apply -f manifests/services/gateway/routes/keycloak-https-route.yaml
+kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
+
+# Проверить HTTPRoute
+kubectl get httproute -n keycloak
+kubectl describe httproute keycloak-server -n keycloak
+```
+
+**Проверка доступа:**
+```bash
+# Проверить, что Keycloak доступен через Gateway
+curl -I https://keycloak.buildbyte.ru
+```
+
+После настройки HTTPRoute Keycloak будет доступен по адресу: `https://keycloak.buildbyte.ru`
+
 ### 8. Установка cert-manager
 
 ```bash
