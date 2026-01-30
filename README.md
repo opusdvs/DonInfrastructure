@@ -800,16 +800,13 @@ KEYCLOAK_PASSWORD=$(kubectl get secret keycloak-db-credentials -n keycloak -o js
 # Проверить, что пароль получен
 echo "Keycloak password length: ${#KEYCLOAK_PASSWORD}"
 
-# Создать базу данных keycloak
-kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'CREATE DATABASE keycloak;'"
-
-# Создать пользователя keycloak с паролем из Secret
+# Создать пользователя keycloak с паролем из Secret (до создания базы!)
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c \"CREATE USER keycloak WITH ENCRYPTED PASSWORD '$KEYCLOAK_PASSWORD';\""
 
-# Выдать права на базу данных
-kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;'"
+# Создать базу данных keycloak с владельцем keycloak
+kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -c 'CREATE DATABASE keycloak OWNER keycloak;'"
 
-# Выдать права на схему public
+# Выдать права на схему public (нужно в PostgreSQL 15+)
 kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWORD' psql -U postgres -d keycloak -c 'GRANT ALL ON SCHEMA public TO keycloak;'"
 ```
 
