@@ -911,27 +911,14 @@ vault kv put secret/argocd/admin password='$ARGO_ADMIN_PASSWORD_HASH'
 
 #### 11.2. Создание VaultStaticSecret для Argo CD
 
+Манифест VaultStaticSecret находится в `manifests/services/argocd/argocd-admin-credentials-vaultstaticsecret.yaml`.
+
 ```bash
 # Создать namespace для Argo CD
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать VaultStaticSecret для Argo CD
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: argocd-admin-credentials
-  namespace: argocd
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: argocd/admin
-  refreshAfter: 60s
-  destination:
-    name: argocd-initial-admin-secret
-    create: true
-EOF
+# Применить VaultStaticSecret манифест
+kubectl apply -f manifests/services/argocd/argocd-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n argocd
