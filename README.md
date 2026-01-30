@@ -1179,23 +1179,8 @@ vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛ�
 # Создать namespace для Jenkins
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать VaultStaticSecret для Jenkins
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: jenkins-admin-credentials
-  namespace: jenkins
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: jenkins/admin
-  refreshAfter: 60s
-  destination:
-    name: jenkins-admin-credentials
-    create: true
-EOF
+# Применить VaultStaticSecret для Jenkins
+kubectl apply -f manifests/services/jenkins/jenkins-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n jenkins
