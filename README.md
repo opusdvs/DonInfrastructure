@@ -646,16 +646,6 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv get -format=json secret/postgresql/admin | jq '.data.data'
 "
-
-# Сохранить credentials администратора Keycloak
-# Замените <ВАШ_ИМЯ_АДМИНИСТРАТОРА> и <ВАШ_ПАРОЛЬ_АДМИНИСТРАТОРА> на реальные значения
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/keycloak/admin \
-  username='<ВАШ_ИМЯ_АДМИНИСТРАТОРА>' \
-  password='<ВАШ_ПАРОЛЬ_АДМИНИСТРАТОРА>'
-"
 ```
 
 **Важно:**
