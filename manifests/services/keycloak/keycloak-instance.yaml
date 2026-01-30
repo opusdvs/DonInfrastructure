@@ -52,14 +52,14 @@ spec:
     port: 5432
     database: keycloak
     usernameSecret:
-      name: postgresql-keycloak-credentials
+      name: keycloak-db-credentials
       key: username
     passwordSecret:
-      name: postgresql-keycloak-credentials
+      name: keycloak-db-credentials
       key: password
   
   # Bootstrap администратор Keycloak
-  # Использует секрет keycloak-admin-credentials, созданный External Secrets Operator
+  # Использует секрет keycloak-admin-credentials, созданный Vault Secrets Operator
   bootstrapAdmin:
     user:
       secret: keycloak-admin-credentials

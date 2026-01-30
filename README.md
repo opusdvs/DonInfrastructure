@@ -876,13 +876,11 @@ watch kubectl get secret gateway-tls-cert -n default
 - Certificate уже содержит все hostnames: `argo.buildbyte.ru`, `jenkins.buildbyte.ru`, `grafana.buildbyte.ru`, `keycloak.buildbyte.ru`
 - При добавлении новых приложений обновите `dnsNames` в `manifests/services/cert-manager/gateway-certificate.yaml` и пересоздайте Certificate
 
-### 11. Установка Jenkins и Argo CD
+### 11. Установка Argo CD
 
 **Важно:** Установите приложения ПЕРЕД созданием HTTPRoute, так как HTTPRoute ссылаются на сервисы этих приложений.
 
-#### 10.1. Сохранение секретов администраторов в Vault
-
-Перед установкой Argo CD и Jenkins сохраните пароли администраторов в Vault:
+#### 11.1. Сохранение секрета администратора Argo CD в Vault
 
 ```bash
 # Установить переменные для работы с Vault
@@ -904,22 +902,6 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv put secret/argocd/admin password='$ARGO_ADMIN_PASSWORD_HASH'
 "
-
-# Сохранить credentials администратора Jenkins
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛЬ>'
-"
-
-# Сохранить credentials администратора Grafana
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/grafana/admin \
-  admin_user='admin' \
-  admin_password='<ВАШ_ПАРОЛЬ>'
-"
 ```
 
 **Важно для Argo CD:**
@@ -927,12 +909,11 @@ vault kv put secret/grafana/admin \
 - Используйте команду: `htpasswd -nbBC 10 "" <пароль> | tr -d ':\n' | sed 's/$2y/$2a/'`
 - Сохраните хеш в Vault по пути `secret/argocd/admin` с ключом `password`
 
-#### 10.2. Создание VaultStaticSecret для синхронизации секретов
+#### 11.2. Создание VaultStaticSecret для Argo CD
 
 ```bash
-# Создать namespace для Argo CD и Jenkins (если еще не созданы)
+# Создать namespace для Argo CD
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
 # Создать VaultStaticSecret для Argo CD
 cat <<EOF | kubectl apply -f -
@@ -952,58 +933,16 @@ spec:
     create: true
 EOF
 
-# Создать VaultStaticSecret для Jenkins
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: jenkins-admin-credentials
-  namespace: jenkins
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: jenkins/admin
-  refreshAfter: 60s
-  destination:
-    name: jenkins-admin-credentials
-    create: true
-EOF
-
-# Создать VaultStaticSecret для Grafana (будет использоваться при установке Prometheus Kube Stack)
-kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-admin-credentials
-  namespace: kube-prometheus-stack
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: grafana/admin
-  refreshAfter: 60s
-  destination:
-    name: grafana-admin
-    create: true
-EOF
-
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n argocd
-kubectl get vaultstaticsecret -n jenkins
-kubectl get vaultstaticsecret -n kube-prometheus-stack
 kubectl get secret argocd-initial-admin-secret -n argocd
-kubectl get secret jenkins-admin-credentials -n jenkins
-kubectl get secret grafana-admin -n kube-prometheus-stack
 ```
 
-#### 10.3. Установка Argo CD и Jenkins
+#### 11.3. Установка Argo CD
 
 ```bash
-# 1. Добавить Helm репозитории
+# 1. Добавить Helm репозиторий
 helm repo add argo https://argoproj.github.io/argo-helm
-helm repo add jenkins https://charts.jenkins.io
 helm repo update
 
 # 2. Установить Argo CD с использованием существующего секрета
@@ -1013,32 +952,21 @@ helm upgrade --install argocd argo/argo-cd \
   -f helm/services/argocd/argocd-values.yaml \
   --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
 
-# 3. Установить Jenkins (admin credentials уже настроены в helm/services/jenkins/jenkins-values.yaml)
-helm upgrade --install jenkins jenkins/jenkins \
-  --namespace jenkins \
-  --create-namespace \
-  -f helm/services/jenkins/jenkins-values.yaml
-
-# 4. Проверить установку
+# 3. Проверить установку
 kubectl get pods -n argocd
-kubectl get pods -n jenkins
 
-# 5. Дождаться готовности сервисов
+# 4. Дождаться готовности сервиса
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-controller -n jenkins --timeout=300s
 ```
 
-**Получение паролей:**
+**Получение пароля:**
 ```bash
 # Пароль администратора Argo CD (из Vault через VaultStaticSecret)
-kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d | echo
+kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d && echo
 # Примечание: Это bcrypt хеш, для использования нужно знать исходный пароль
-
-# Пароль администратора Jenkins (из Vault через VaultStaticSecret)
-kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
-#### 10.4. Настройка OIDC для Argo CD через Keycloak
+#### 11.4. Настройка OIDC для Argo CD через Keycloak
 
 **Важно:** Перед настройкой OIDC убедитесь, что:
 - Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
@@ -1189,7 +1117,79 @@ configs:
 - RBAC настраивается на основе групп из Keycloak через `policy.csv`
 - **При ошибке "unauthorized_client":** см. инструкции по устранению неполадок в `helm/services/argocd/OIDC_TROUBLESHOOTING.md`
 
-#### 10.5. Настройка GitHub API Token для Jenkins
+### 12. Установка Jenkins
+
+#### 12.1. Сохранение секрета администратора Jenkins в Vault
+
+```bash
+# Установить переменные для работы с Vault
+export VAULT_ADDR="http://127.0.0.1:8200"
+export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+
+# Сохранить credentials администратора Jenkins
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛЬ>'
+"
+```
+
+#### 12.2. Создание VaultStaticSecret для Jenkins
+
+```bash
+# Создать namespace для Jenkins
+kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
+
+# Создать VaultStaticSecret для Jenkins
+cat <<EOF | kubectl apply -f -
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: jenkins-admin-credentials
+  namespace: jenkins
+spec:
+  vaultAuthRef: vault-secrets-operator/default
+  mount: secret
+  type: kv-v2
+  path: jenkins/admin
+  refreshAfter: 60s
+  destination:
+    name: jenkins-admin-credentials
+    create: true
+EOF
+
+# Проверить синхронизацию секретов
+kubectl get vaultstaticsecret -n jenkins
+kubectl get secret jenkins-admin-credentials -n jenkins
+```
+
+#### 12.3. Установка Jenkins
+
+```bash
+# 1. Добавить Helm репозиторий
+helm repo add jenkins https://charts.jenkins.io
+helm repo update
+
+# 2. Установить Jenkins (admin credentials уже настроены в helm/services/jenkins/jenkins-values.yaml)
+helm upgrade --install jenkins jenkins/jenkins \
+  --namespace jenkins \
+  --create-namespace \
+  -f helm/services/jenkins/jenkins-values.yaml
+
+# 3. Проверить установку
+kubectl get pods -n jenkins
+
+# 4. Дождаться готовности сервиса
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-controller -n jenkins --timeout=300s
+```
+
+**Получение пароля:**
+```bash
+# Пароль администратора Jenkins (из Vault через VaultStaticSecret)
+kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
+```
+
+#### 12.4. Настройка GitHub API Token для Jenkins
 
 **Важно:** Перед настройкой GitHub token убедитесь, что:
 - Jenkins установлен и работает
@@ -1293,7 +1293,7 @@ kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
 3. Должен быть создан credential с ID `github-token` типа "Secret text"
 4. Этот credential можно использовать в Pipeline jobs для доступа к GitHub репозиториям
 
-#### 10.6. Настройка Docker Registry для Jenkins
+#### 12.5. Настройка Docker Registry для Jenkins
 
 **Важно:** Перед настройкой Docker Registry убедитесь, что:
 - Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
@@ -1453,7 +1453,7 @@ pipeline {
 - GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
 - Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
 
-#### 10.7. Добавление Docker Registry credentials для Kubernetes (ImagePullSecrets)
+#### 12.6. Добавление Docker Registry credentials для Kubernetes (ImagePullSecrets)
 
 Docker Registry credentials могут использоваться не только в Jenkins, но и в Kubernetes для доступа к приватным образам из подов. Это полезно для:
 - Pull образов из приватного Docker Registry в поды
@@ -1700,13 +1700,13 @@ vault kv get secret/kubernetes/docker-registry
 kubectl describe pod <pod-name> -n <namespace> | grep -i "imagepull\|pull"
 ```
 
-### 12. Установка Prometheus Kube Stack (Prometheus + Grafana)
+### 13. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** 
 - Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через Vault Secrets Operator.
 - **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana (`additionalDataSources` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`). Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен.
 
-#### 12.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
+#### 13.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
 
 Секрет для Grafana должен быть создан перед установкой Prometheus Kube Stack:
 
@@ -1776,7 +1776,7 @@ kubectl get secret grafana-admin -n kube-prometheus-stack
 
 **Примечание:** Если секреты для Grafana уже сохранены в Vault в разделе 10.1, можно пропустить Шаг 1 и сразу перейти к Шагу 2.
 
-#### 12.2. Установка Prometheus Kube Stack
+#### 13.2. Установка Prometheus Kube Stack
 
 **Важно:** Убедитесь, что Loki развернут (см. раздел 13) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
 
@@ -1817,7 +1817,7 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
-#### 12.3. Настройка OIDC для Grafana через Keycloak
+#### 13.3. Настройка OIDC для Grafana через Keycloak
 
 **Важно:** Перед настройкой OIDC убедитесь, что:
 - Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
@@ -1950,7 +1950,7 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
   - Группа `GrafanaEditors` получает роль `Editor`
   - Остальные пользователи получают роль `Viewer`
 
-### 13. Установка Loki (централизованное хранение логов)
+### 14. Установка Loki (централизованное хранение логов)
 
 Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
 
@@ -2040,7 +2040,7 @@ curl http://$LOKI_EXTERNAL_IP:3100/metrics | head -20
   - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
   - Статус LoadBalancer Service: `kubectl describe svc loki-gateway -n logging`
 
-### 14. Установка Fluent Bit (сбор логов) в services кластере
+### 15. Установка Fluent Bit (сбор логов) в services кластере
 
 Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла services кластера, отправляя их в Loki.
 
@@ -2105,7 +2105,7 @@ kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|er
   - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
   - Логи Fluent Bit: `kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=50`
 
-### 15. Установка Jaeger
+### 16. Установка Jaeger
 
 ```bash
 # 1. Добавить Helm репозиторий Jaeger
@@ -2137,7 +2137,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=jaeger -n jaege
 **Подробная документация:**
 - См. конфигурацию в `helm/services/jaeger/jaeger-values.yaml`
 
-### 16. Создание HTTPRoute для приложений
+### 17. Создание HTTPRoute для приложений
 
 **Важно:** HTTPRoute должны создаваться ПОСЛЕ установки приложений, так как они ссылаются на сервисы Argo CD и Jenkins.
 
