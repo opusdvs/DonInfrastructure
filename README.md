@@ -2312,46 +2312,31 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 kubectl get namespaces
 ```
 
-### Создание AppProject для организации Application
+### Создание AppProject dev-microservices для микросервисов
 
-AppProject в Argo CD используются для организации Application и управления доступом к ресурсам. В инфраструктуре настроены два проекта:
+AppProject `dev-microservices` используется для развертывания микросервисов в dev кластере.
 
-1. **`dev-infrastructure`** — для инфраструктурных сервисов dev кластера (cert-manager, vault-secrets-operator, fluent-bit и т.д.)
-2. **`dev-microservices`** — для микросервисов dev кластера (donweather-ms-weather, donweather-front и т.д.)
-
-**Применение AppProject:**
+**Примечание:** AppProject `dev-infrastructure` уже создан в Шаге 4.2.
 
 ```bash
 # Переключиться на services кластер
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# Применить AppProject
-kubectl apply -f manifests/services/argocd/appprojects/
+# Применить AppProject для микросервисов
+kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
 
-# Проверить создание проектов
-kubectl get appproject -n argocd
-
-# Проверить детали проектов
-kubectl describe appproject dev-infrastructure -n argocd
+# Проверить создание проекта
+kubectl get appproject dev-microservices -n argocd
 kubectl describe appproject dev-microservices -n argocd
 ```
 
-**Описание проектов:**
-
-- **`dev-infrastructure`**: 
-  - Разрешает репозитории: Helm charts (jetstack, hashicorp, fluent) и DonInfrastructure
-  - Разрешает namespaces: `cert-manager`, `vault-secrets-operator`, `logging` в dev кластере
-  - Роли: `infrastructure-admin` (группа `InfrastructureAdmins`), `infrastructure-operator` (группа `InfrastructureOperators`)
-
-- **`dev-microservices`**:
-  - Разрешает репозитории: DonWeather-* репозитории и DonInfrastructure
-  - Разрешает namespaces: `donweather` и все остальные в dev кластере
-  - Роли: `microservices-admin` (группа `MicroservicesAdmins`), `developer` (группа `Developers`), `operator` (группа `Operators`)
-
-**Важно:**
-- AppProject должны быть созданы **до** создания Application
-- Все Application автоматически используют соответствующий проект (указан в поле `spec.project`)
-- RBAC роли привязаны к группам из Keycloak (нужно создать соответствующие группы в Keycloak)
+**Описание `dev-microservices`:**
+- Разрешает репозитории: DonWeather-* и DonInfrastructure
+- Разрешает namespaces: `donweather` и все остальные в dev кластере
+- RBAC роли:
+  - `microservices-admin` (группа `MicroservicesAdmins`) — полный доступ
+  - `developer` (группа `Developers`) — синхронизация и просмотр
+  - `operator` (группа `Operators`) — просмотр и синхронизация
 
 ### Создание Argo CD Application для развертывания приложений
 
