@@ -2101,20 +2101,54 @@ kubectl describe vaultauth default -n vault-secrets-operator
 
 #### 8.1. Добавление dev кластера в Argo CD
 
+Добавление кластера выполняется через создание Secret с kubeconfig:
+
 ```bash
 # Переключиться на services кластер
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# Проверить, добавлен ли dev кластер
-argocd cluster list
+# Получить адрес API сервера dev кластера
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
 
-# Если dev кластер не добавлен, добавить его:
-# Вариант 1: Через argocd CLI (требуется kubeconfig dev кластера)
-argocd cluster add dev-cluster --kubeconfig $HOME/kubeconfig-dev-cluster.yaml --name dev-cluster
+# Получить CA сертификат dev кластера (base64)
+DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
 
-# Вариант 2: Через kubectl (создание Secret)
-# См. раздел "Добавление dev кластера в Argo CD через Vault Secrets Operator"
+# Получить токен для аутентификации (из kubeconfig или создать ServiceAccount)
+# Вариант: использовать токен из kubeconfig
+DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.users[].user.token}')
+
+# Создать Secret для Argo CD
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dev-cluster-secret
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: dev-cluster
+  server: "$DEV_CLUSTER_SERVER"
+  config: |
+    {
+      "bearerToken": "$DEV_TOKEN",
+      "tlsClientConfig": {
+        "insecure": false,
+        "caData": "$DEV_CA_DATA"
+      }
+    }
+EOF
+
+# Проверить, что Secret создан
+kubectl get secret dev-cluster-secret -n argocd
+
+# Проверить статус кластера в Argo CD
+# Откройте https://argo.buildbyte.ru → Settings → Clusters
+# Должен отображаться кластер dev-cluster
 ```
+
+**Важно:** Подробная инструкция и диагностика в разделе "Добавление dev кластера в Argo CD".
 
 #### 8.2. Создание AppProject для dev кластера
 
