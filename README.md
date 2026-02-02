@@ -2095,18 +2095,30 @@ kubectl describe vaultauth default -n vault-secrets-operator
 - Auth method mount: `kubernetes-dev` (отдельный от services кластера)
 - VaultStaticSecret ссылаются на VaultAuth через `vaultAuthRef: vault-secrets-operator/default`
 
-### Шаг 8: Установка Fluent Bit (сбор логов) в dev кластере
+### Шаг 8: Настройка Argo CD для управления dev кластером
 
-Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
+Для развертывания приложений в dev кластере через Argo CD необходимо добавить dev кластер и создать AppProject.
 
-**Важно:**
-- Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
-- Fluent Bit настроен для отправки логов в Loki через HTTP API
-- Необходимо обновить конфигурацию Fluent Bit с внешним IP адресом Loki перед установкой
+#### 8.1. Добавление dev кластера в Argo CD
 
-#### 8.1. Создание AppProject для dev кластера в Argo CD
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-Перед развертыванием Fluent Bit через Argo CD необходимо создать AppProject:
+# Проверить, добавлен ли dev кластер
+argocd cluster list
+
+# Если dev кластер не добавлен, добавить его:
+# Вариант 1: Через argocd CLI (требуется kubeconfig dev кластера)
+argocd cluster add dev-cluster --kubeconfig $HOME/kubeconfig-dev-cluster.yaml --name dev-cluster
+
+# Вариант 2: Через kubectl (создание Secret)
+# См. раздел "Добавление dev кластера в Argo CD через Vault Secrets Operator"
+```
+
+#### 8.2. Создание AppProject для dev кластера
+
+AppProject организует Application и определяет права доступа:
 
 ```bash
 # Переключиться на services кластер
@@ -2115,14 +2127,29 @@ export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 # Применить AppProject для инфраструктурных сервисов dev кластера
 kubectl apply -f manifests/services/argocd/appprojects/dev-infrastructure-project.yaml
 
-# Проверить, что AppProject создан
-kubectl get appproject dev-infrastructure -n argocd
+# Применить AppProject для микросервисов dev кластера
+kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
+
+# Проверить, что AppProject созданы
+kubectl get appproject -n argocd
 kubectl describe appproject dev-infrastructure -n argocd
+kubectl describe appproject dev-microservices -n argocd
 ```
 
-**Важно:** AppProject `dev-infrastructure` должен быть создан до применения Application.
+**AppProject:**
+- `dev-infrastructure` — для инфраструктурных сервисов (cert-manager, vault-secrets-operator, fluent-bit)
+- `dev-microservices` — для микросервисов (donweather и другие приложения)
 
-#### 8.2. Настройка Fluent Bit для отправки логов в Loki
+### Шаг 9: Установка Fluent Bit (сбор логов) в dev кластере
+
+Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
+
+**Важно:**
+- Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
+- Fluent Bit настроен для отправки логов в Loki через HTTP API
+- AppProject `dev-infrastructure` должен быть создан (см. Шаг 8)
+
+#### 9.1. Настройка Fluent Bit для отправки логов в Loki
 
 Перед установкой Fluent Bit проверьте, что IP адрес Loki указан правильно в конфигурации:
 
@@ -2145,7 +2172,7 @@ grep "Host" helm/dev/fluent-bit/fluent-bit-values.yaml | grep -v "#"
 - IP адрес можно получить командой: `kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
 - Если LoadBalancer еще не получил IP адрес, дождитесь его назначения перед настройкой Fluent Bit
 
-#### 8.3. Развертывание Fluent Bit через Argo CD Application
+#### 9.2. Развертывание Fluent Bit через Argo CD Application
 
 Fluent Bit разворачивается через Argo CD Application в services кластере:
 
@@ -2164,7 +2191,7 @@ kubectl describe application fluent-bit-dev -n argocd
 kubectl wait --for=condition=Synced application fluent-bit-dev -n argocd --timeout=300s
 ```
 
-#### 8.4. Проверка установки Fluent Bit
+#### 9.3. Проверка установки Fluent Bit
 
 ```bash
 # Переключиться на dev кластер
