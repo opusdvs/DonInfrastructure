@@ -1258,7 +1258,22 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-co
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
-#### 12.4. Проверка GitHub credentials в Jenkins
+#### 12.4. Создание HTTPRoute для Jenkins
+
+```bash
+# Применить HTTPRoute для HTTPS доступа
+kubectl apply -f manifests/services/gateway/routes/jenkins-https-route.yaml
+
+# Применить HTTPRoute для HTTP→HTTPS редиректа
+kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n jenkins
+```
+
+После настройки HTTPRoute Jenkins будет доступен по адресу: `https://jenkins.buildbyte.ru`
+
+#### 12.5. Проверка GitHub credentials в Jenkins
 
 GitHub credentials настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC и автоматически загружаются при установке.
 
@@ -1275,7 +1290,7 @@ kubectl get secret jenkins-github-token -n jenkins
 kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
 ```
 
-#### 12.5. Проверка и использование Docker Registry credentials в Jenkins
+#### 12.6. Проверка и использование Docker Registry credentials в Jenkins
 
 Docker Registry credentials синхронизируются из Vault через VaultStaticSecret и автоматически загружаются в Jenkins через JCasC при установке.
 
@@ -1344,7 +1359,7 @@ pipeline {
 - GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
 - Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
 
-#### 12.6. Добавление Docker Registry credentials для Kubernetes (ImagePullSecrets)
+#### 12.7. Добавление Docker Registry credentials для Kubernetes (ImagePullSecrets)
 
 Docker Registry credentials могут использоваться не только в Jenkins, но и в Kubernetes для доступа к приватным образам из подов. Это полезно для:
 - Pull образов из приватного Docker Registry в поды
