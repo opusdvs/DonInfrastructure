@@ -1655,6 +1655,17 @@ kubectl get httproute -n kube-prometheus-stack
 
 **GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **vault-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
 
+**Рекомендуемый порядок выполнения шагов:**
+1. Шаг 1: Развертывание кластера через Terraform
+2. Шаг 2: Установка CSI драйвера Timeweb Cloud
+3. Шаг 3: Установка Gateway API с NGINX Gateway Fabric
+4. **Шаг 7: Настройка Argo CD для управления dev кластером** ← выполнить до шагов 4-6
+5. Шаг 4: Установка cert-manager через Argo CD
+6. Шаг 5: Создание ClusterIssuer
+7. Шаг 6: Создание Gateway
+8. Шаг 8: Установка Vault Secrets Operator через Argo CD
+9. Шаг 9: Установка Fluent Bit через Argo CD
+
 **Важно:** Перед применением Application необходимо создать AppProject для организации Application:
 
 ```bash
@@ -1771,28 +1782,42 @@ kubectl get gatewayclass
 kubectl wait --for=condition=ready pod -l app=nginx-gateway-fabric -n nginx-gateway --timeout=300s
 ```
 
-### Шаг 4: Установка cert-manager
+### Шаг 4: Установка cert-manager через Argo CD
 
 cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt.
 
-**Важно:** cert-manager должен быть установлен ДО создания Gateway, так как Gateway использует аннотацию `cert-manager.io/cluster-issuer` для автоматического получения сертификатов.
+**Важно:** 
+- cert-manager должен быть установлен ДО создания Gateway (Шаг 6), так как Gateway использует аннотацию `cert-manager.io/cluster-issuer` для автоматического получения сертификатов
+- Перед выполнением этого шага должен быть настроен Argo CD для dev кластера (Шаг 7) — см. рекомендуемый порядок в начале раздела
 
 ```bash
-# 1. Добавить Helm репозиторий
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# 2. Установить cert-manager с поддержкой Gateway API
-helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  -f helm/dev/cert-manager/cert-manager-values.yaml
+# Применить Application для cert-manager
+kubectl apply -f manifests/services/argocd/applications/dev/application-cert-manager.yaml
 
-# 3. Проверить установку
+# Проверить статус Application в Argo CD
+kubectl get application cert-manager-dev -n argocd
+
+# Дождаться синхронизации
+kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/cert-manager-dev -n argocd --timeout=300s
+kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/cert-manager-dev -n argocd --timeout=300s
+```
+
+**Проверка установки в dev кластере:**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить поды
 kubectl get pods -n cert-manager
+
+# Проверить CRD
 kubectl get crd | grep cert-manager
 
-# 4. Дождаться готовности cert-manager
+# Дождаться готовности cert-manager
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 ```
 
