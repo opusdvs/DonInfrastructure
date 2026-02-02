@@ -1850,25 +1850,49 @@ kubectl get certificate -n default -w
 
 Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
 
-#### 7.1. Установка Vault Secrets Operator
+**Порядок выполнения шагов 7 и 8:**
+1. Сначала выполните **Шаг 7.2** и **Шаг 7.3** (настройка Vault Kubernetes Auth)
+2. Затем выполните **Шаг 8** (настройка Argo CD для dev кластера)
+3. После этого вернитесь к **Шагу 7.1** (установка VSO через Argo CD)
+4. Завершите настройку **Шагом 7.4** (VaultConnection и VaultAuth)
+
+#### 7.1. Установка Vault Secrets Operator через Argo CD
+
+Vault Secrets Operator разворачивается через Argo CD Application.
+
+**Важно:** 
+- Перед установкой убедитесь, что dev кластер добавлен в Argo CD (Шаг 8.1)
+- AppProject `dev-infrastructure` должен быть создан (Шаг 8.2)
+- Шаги 7.2 и 7.3 должны быть выполнены (настройка Vault)
 
 ```bash
-# 1. Добавить Helm репозиторий HashiCorp (если еще не добавлен)
-helm repo add hashicorp https://helm.releases.hashicorp.com
-helm repo update
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# 2. Установить Vault Secrets Operator
-helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
-  --version 0.10.0 \
-  --namespace vault-secrets-operator \
-  --create-namespace \
-  -f helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml
+# Применить Application для Vault Secrets Operator
+kubectl apply -f manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml
 
-# 3. Проверить установку
+# Проверить статус Application в Argo CD
+kubectl get application vault-secrets-operator-dev -n argocd
+
+# Дождаться синхронизации (или проверить в веб-интерфейсе Argo CD)
+kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/vault-secrets-operator-dev -n argocd --timeout=300s
+kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/vault-secrets-operator-dev -n argocd --timeout=300s
+```
+
+**Проверка установки в dev кластере:**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить поды
 kubectl get pods -n vault-secrets-operator
+
+# Проверить CRD
 kubectl get crd | grep secrets.hashicorp.com
 
-# 4. Дождаться готовности Vault Secrets Operator
+# Дождаться готовности Vault Secrets Operator
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
 ```
 

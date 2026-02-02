@@ -7,7 +7,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Проект для инфраструктурных сервисов в dev кластере (cert-manager, external-secrets, fluent-bit и т.д.). Все Application в этом проекте развертываются в dev кластер.
+  description: Проект для инфраструктурных сервисов в dev кластере (cert-manager, vault-secrets-operator, fluent-bit и т.д.). Все Application в этом проекте развертываются в dev кластер.
 
   # Разрешенные источники (репозитории)
   sourceRepos:
@@ -15,6 +15,7 @@ spec:
     - 'https://charts.jetstack.io'
     - 'https://charts.external-secrets.io'
     - 'https://fluent.github.io/helm-charts'
+    - 'https://helm.releases.hashicorp.com'
     # Репозиторий с конфигурацией инфраструктуры (values для Helm charts)
     - 'https://github.com/opusdvs/DonInfrastructure.git'
     # Разрешить все репозитории (опционально, для гибкости)
@@ -24,6 +25,8 @@ spec:
   destinations:
     # Dev кластер для инфраструктурных сервисов (по имени кластера, добавленного в Argo CD)
     - namespace: 'cert-manager'
+      name: 'dev-cluster'
+    - namespace: 'vault-secrets-operator'
       name: 'dev-cluster'
     - namespace: 'external-secrets-system'
       name: 'dev-cluster'
