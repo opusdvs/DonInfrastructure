@@ -1846,57 +1846,94 @@ kubectl get certificate -n default -w
 | donweather.dev.buildbyte.ru | donweather-tls-cert |
 | api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
 
-### Шаг 7: Установка и настройка Vault Secrets Operator для работы с внешним Vault
+### Шаг 7: Настройка Argo CD для управления dev кластером
 
-Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
+Для развертывания приложений в dev кластере через Argo CD необходимо добавить dev кластер и создать AppProject.
 
-**Порядок выполнения шагов 7 и 8:**
-1. Сначала выполните **Шаг 7.2** и **Шаг 7.3** (настройка Vault Kubernetes Auth)
-2. Затем выполните **Шаг 8** (настройка Argo CD для dev кластера)
-3. После этого вернитесь к **Шагу 7.1** (установка VSO через Argo CD)
-4. Завершите настройку **Шагом 7.4** (VaultConnection и VaultAuth)
+#### 7.1. Добавление dev кластера в Argo CD
 
-#### 7.1. Установка Vault Secrets Operator через Argo CD
+**Пункт 1: Получить данные dev кластера**
 
-Vault Secrets Operator разворачивается через Argo CD Application.
+```bash
+# Адрес API сервера dev кластера
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.server}')
+echo "Server: $DEV_CLUSTER_SERVER"
 
-**Важно:** 
-- Перед установкой убедитесь, что dev кластер добавлен в Argo CD (Шаг 8.1)
-- AppProject `dev-infrastructure` должен быть создан (Шаг 8.2)
-- Шаги 7.2 и 7.3 должны быть выполнены (настройка Vault)
+# CA сертификат (base64)
+DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
+echo "CA Data: ${DEV_CA_DATA:0:50}..."
+
+# Токен (если есть в kubeconfig)
+DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.users[].user.token}')
+echo "Token: ${DEV_TOKEN:0:20}..."
+```
+
+**Пункт 2: Заполнить manifest файл**
+
+Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
+- Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
+- Замените `<DEV_BEARER_TOKEN>` на токен
+- Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
+
+**Пункт 3: Применить Secret**
 
 ```bash
 # Переключиться на services кластер
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# Применить Application для Vault Secrets Operator
-kubectl apply -f manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml
+# Применить Secret
+kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
 
-# Проверить статус Application в Argo CD
-kubectl get application vault-secrets-operator-dev -n argocd
-
-# Дождаться синхронизации (или проверить в веб-интерфейсе Argo CD)
-kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/vault-secrets-operator-dev -n argocd --timeout=300s
-kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/vault-secrets-operator-dev -n argocd --timeout=300s
+# Проверить, что Secret создан
+kubectl get secret dev-cluster-secret -n argocd
 ```
 
-**Проверка установки в dev кластере:**
+**Пункт 4: Проверить в Argo CD**
+
+1. Откройте https://argo.buildbyte.ru
+2. Авторизуйтесь через Keycloak
+3. Перейдите в **Settings** → **Clusters**
+4. Должен отображаться кластер `dev-cluster` со статусом "Connected"
+
+**Диагностика, если кластер не отображается:**
 
 ```bash
-# Переключиться на dev кластер
-export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+# Проверить Secret
+kubectl get secret dev-cluster-secret -n argocd -o yaml
 
-# Проверить поды
-kubectl get pods -n vault-secrets-operator
-
-# Проверить CRD
-kubectl get crd | grep secrets.hashicorp.com
-
-# Дождаться готовности Vault Secrets Operator
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
+# Проверить логи Argo CD
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
 ```
 
-#### 7.2. Проверка HTTPRoute для Vault в services кластере
+#### 7.2. Создание AppProject для dev кластера
+
+AppProject организует Application и определяет права доступа:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить AppProject для инфраструктурных сервисов dev кластера
+kubectl apply -f manifests/services/argocd/appprojects/dev-infrastructure-project.yaml
+
+# Применить AppProject для микросервисов dev кластера
+kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
+
+# Проверить, что AppProject созданы
+kubectl get appproject -n argocd
+kubectl describe appproject dev-infrastructure -n argocd
+kubectl describe appproject dev-microservices -n argocd
+```
+
+**AppProject:**
+- `dev-infrastructure` — для инфраструктурных сервисов (cert-manager, vault-secrets-operator, fluent-bit)
+- `dev-microservices` — для микросервисов (donweather и другие приложения)
+
+### Шаг 8: Установка и настройка Vault Secrets Operator для работы с внешним Vault
+
+Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
+
+#### 8.1. Проверка HTTPRoute для Vault в services кластере
 
 Vault доступен через HTTPRoute в services кластере по адресу `https://vault.buildbyte.ru`.
 
@@ -1932,7 +1969,7 @@ kubectl get httproute vault-server -n vault -o yaml
 - **HTTPS:** `https://vault.buildbyte.ru:443` (рекомендуется)
 - **HTTP:** `http://vault.buildbyte.ru:80` (будет редиректить на HTTPS)
 
-#### 7.3. Настройка Kubernetes Auth в Vault для dev кластера
+#### 8.2. Настройка Kubernetes Auth в Vault для dev кластера
 
 Vault должен быть настроен для аутентификации ServiceAccount из dev кластера. Это позволит Vault Secrets Operator в dev кластере получать секреты из Vault в services кластере.
 
@@ -2093,7 +2130,42 @@ vault read auth/kubernetes-dev/role/vault-secrets-operator
 - CA сертификат и адрес Kubernetes API должны соответствовать **dev кластеру**
 - Токен действует 1 год (`--duration=8760h`), после истечения нужно обновить
 
-#### 7.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
+#### 8.3. Установка Vault Secrets Operator через Argo CD
+
+Vault Secrets Operator разворачивается через Argo CD Application.
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить Application для Vault Secrets Operator
+kubectl apply -f manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml
+
+# Проверить статус Application в Argo CD
+kubectl get application vault-secrets-operator-dev -n argocd
+
+# Дождаться синхронизации (или проверить в веб-интерфейсе Argo CD)
+kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/vault-secrets-operator-dev -n argocd --timeout=300s
+kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/vault-secrets-operator-dev -n argocd --timeout=300s
+```
+
+**Проверка установки в dev кластере:**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить поды
+kubectl get pods -n vault-secrets-operator
+
+# Проверить CRD
+kubectl get crd | grep secrets.hashicorp.com
+
+# Дождаться готовности Vault Secrets Operator
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
+```
+
+#### 8.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
 
 VaultConnection и VaultAuth с именем `default` уже созданы при установке Vault Secrets Operator. Нужно обновить их для подключения к Vault в services кластере.
 
@@ -2119,89 +2191,6 @@ kubectl describe vaultauth default -n vault-secrets-operator
 - Auth method mount: `kubernetes-dev` (отдельный от services кластера)
 - VaultStaticSecret ссылаются на VaultAuth через `vaultAuthRef: vault-secrets-operator/default`
 
-### Шаг 8: Настройка Argo CD для управления dev кластером
-
-Для развертывания приложений в dev кластере через Argo CD необходимо добавить dev кластер и создать AppProject.
-
-#### 8.1. Добавление dev кластера в Argo CD
-
-**Пункт 1: Получить данные dev кластера**
-
-```bash
-# Адрес API сервера dev кластера
-DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.server}')
-echo "Server: $DEV_CLUSTER_SERVER"
-
-# CA сертификат (base64)
-DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
-echo "CA Data: ${DEV_CA_DATA:0:50}..."
-
-# Токен (если есть в kubeconfig)
-DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.users[].user.token}')
-echo "Token: ${DEV_TOKEN:0:20}..."
-```
-
-**Пункт 2: Заполнить manifest файл**
-
-Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
-- Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
-- Замените `<DEV_BEARER_TOKEN>` на токен
-- Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
-
-**Пункт 3: Применить Secret**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Применить Secret
-kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
-
-# Проверить, что Secret создан
-kubectl get secret dev-cluster-secret -n argocd
-```
-
-**Пункт 4: Проверить в Argo CD**
-
-1. Откройте https://argo.buildbyte.ru
-2. Авторизуйтесь через Keycloak
-3. Перейдите в **Settings** → **Clusters**
-4. Должен отображаться кластер `dev-cluster` со статусом "Connected"
-
-**Диагностика, если кластер не отображается:**
-
-```bash
-# Проверить Secret
-kubectl get secret dev-cluster-secret -n argocd -o yaml
-
-# Проверить логи Argo CD
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
-```
-
-#### 8.2. Создание AppProject для dev кластера
-
-AppProject организует Application и определяет права доступа:
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Применить AppProject для инфраструктурных сервисов dev кластера
-kubectl apply -f manifests/services/argocd/appprojects/dev-infrastructure-project.yaml
-
-# Применить AppProject для микросервисов dev кластера
-kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
-
-# Проверить, что AppProject созданы
-kubectl get appproject -n argocd
-kubectl describe appproject dev-infrastructure -n argocd
-kubectl describe appproject dev-microservices -n argocd
-```
-
-**AppProject:**
-- `dev-infrastructure` — для инфраструктурных сервисов (cert-manager, vault-secrets-operator, fluent-bit)
-- `dev-microservices` — для микросервисов (donweather и другие приложения)
-
 ### Шаг 9: Установка Fluent Bit (сбор логов) в dev кластере
 
 Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
@@ -2209,7 +2198,7 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 **Важно:**
 - Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
 - Fluent Bit настроен для отправки логов в Loki через HTTP API
-- AppProject `dev-infrastructure` должен быть создан (см. Шаг 8)
+- AppProject `dev-infrastructure` должен быть создан (см. Шаг 7)
 
 #### 9.1. Настройка Fluent Bit для отправки логов в Loki
 
