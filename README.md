@@ -1655,14 +1655,14 @@ kubectl get httproute -n kube-prometheus-stack
 
 **GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **vault-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
 
-**Рекомендуемый порядок выполнения шагов:**
+**Порядок выполнения шагов:**
 1. Шаг 1: Развертывание кластера через Terraform
 2. Шаг 2: Установка CSI драйвера Timeweb Cloud
 3. Шаг 3: Установка Gateway API с NGINX Gateway Fabric
-4. **Шаг 7: Настройка Argo CD для управления dev кластером** ← выполнить до шагов 4-6
-5. Шаг 4: Установка cert-manager через Argo CD
-6. Шаг 5: Создание ClusterIssuer
-7. Шаг 6: Создание Gateway
+4. Шаг 4: Настройка Argo CD для управления dev кластером
+5. Шаг 5: Установка cert-manager через Argo CD
+6. Шаг 6: Создание ClusterIssuer
+7. Шаг 7: Создание Gateway
 8. Шаг 8: Установка Vault Secrets Operator через Argo CD
 9. Шаг 9: Установка Fluent Bit через Argo CD
 
@@ -1782,100 +1782,11 @@ kubectl get gatewayclass
 kubectl wait --for=condition=ready pod -l app=nginx-gateway-fabric -n nginx-gateway --timeout=300s
 ```
 
-### Шаг 4: Установка cert-manager через Argo CD
-
-cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt.
-
-**Важно:** 
-- cert-manager должен быть установлен ДО создания Gateway (Шаг 6), так как Gateway использует аннотацию `cert-manager.io/cluster-issuer` для автоматического получения сертификатов
-- Перед выполнением этого шага должен быть настроен Argo CD для dev кластера (Шаг 7) — см. рекомендуемый порядок в начале раздела
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Применить Application для cert-manager
-kubectl apply -f manifests/services/argocd/applications/dev/application-cert-manager.yaml
-
-# Проверить статус Application в Argo CD
-kubectl get application cert-manager-dev -n argocd
-
-# Дождаться синхронизации
-kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/cert-manager-dev -n argocd --timeout=300s
-kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/cert-manager-dev -n argocd --timeout=300s
-```
-
-**Проверка установки в dev кластере:**
-
-```bash
-# Переключиться на dev кластер
-export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
-
-# Проверить поды
-kubectl get pods -n cert-manager
-
-# Проверить CRD
-kubectl get crd | grep cert-manager
-
-# Дождаться готовности cert-manager
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
-```
-
-**Важно:** 
-- Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
-
-### Шаг 5: Создание ClusterIssuer
-
-```bash
-# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-kubectl apply -f manifests/dev/cert-manager/cluster-issuer.yaml
-
-# 2. Проверить ClusterIssuer
-kubectl get clusterissuer
-kubectl describe clusterissuer letsencrypt-prod
-```
-
-**Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/dev/cert-manager/cluster-issuer.yaml`
-
-### Шаг 6: Создание Gateway
-
-После установки cert-manager и ClusterIssuer создайте Gateway. cert-manager автоматически создаст сертификаты для каждого HTTPS listener благодаря аннотации `cert-manager.io/cluster-issuer`.
-
-```bash
-# 1. Применить Gateway
-kubectl apply -f manifests/dev/gateway/gateway.yaml
-
-# 2. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway dev-gateway -n default
-
-# 3. Проверить, что Gateway получил IP адрес
-kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}'
-
-# 4. Проверить автоматически созданные сертификаты
-kubectl get certificate -n default
-
-# 5. Дождаться готовности сертификатов (может занять 1-2 минуты)
-kubectl get certificate -n default -w
-```
-
-**Важно:** 
-- Имя Gateway: `dev-gateway`
-- Gateway создается в namespace `default`
-- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
-- После создания Gateway получите его IP адрес и настройте DNS записи для ваших доменов
-
-**Автоматически создаваемые сертификаты:**
-| Hostname | Secret |
-|----------|--------|
-| donweather.dev.buildbyte.ru | donweather-tls-cert |
-| api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
-
-### Шаг 7: Настройка Argo CD для управления dev кластером
+### Шаг 4: Настройка Argo CD для управления dev кластером
 
 Для развертывания приложений в dev кластере через Argo CD необходимо добавить dev кластер и создать AppProject.
 
-#### 7.1. Добавление dev кластера в Argo CD
+#### 4.1. Добавление dev кластера в Argo CD
 
 **Пункт 1: Получить данные dev кластера**
 
@@ -1930,7 +1841,7 @@ kubectl get secret dev-cluster-secret -n argocd -o yaml
 kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
 ```
 
-#### 7.2. Создание AppProject для dev кластера
+#### 4.2. Создание AppProject для dev кластера
 
 AppProject организует Application и определяет права доступа:
 
@@ -1953,6 +1864,99 @@ kubectl describe appproject dev-microservices -n argocd
 **AppProject:**
 - `dev-infrastructure` — для инфраструктурных сервисов (cert-manager, vault-secrets-operator, fluent-bit)
 - `dev-microservices` — для микросервисов (donweather и другие приложения)
+
+### Шаг 5: Установка cert-manager через Argo CD
+
+cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt.
+
+**Важно:** cert-manager должен быть установлен ДО создания Gateway (Шаг 7), так как Gateway использует аннотацию `cert-manager.io/cluster-issuer` для автоматического получения сертификатов.
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить Application для cert-manager
+kubectl apply -f manifests/services/argocd/applications/dev/application-cert-manager.yaml
+
+# Проверить статус Application в Argo CD
+kubectl get application cert-manager-dev -n argocd
+
+# Дождаться синхронизации
+kubectl wait --for=jsonpath='{.status.sync.status}'=Synced application/cert-manager-dev -n argocd --timeout=300s
+kubectl wait --for=jsonpath='{.status.health.status}'=Healthy application/cert-manager-dev -n argocd --timeout=300s
+```
+
+**Проверка установки в dev кластере:**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Проверить поды
+kubectl get pods -n cert-manager
+
+# Проверить CRD
+kubectl get crd | grep cert-manager
+
+# Дождаться готовности cert-manager
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+```
+
+**Важно:** 
+- Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+
+### Шаг 6: Создание ClusterIssuer
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
+kubectl apply -f manifests/dev/cert-manager/cluster-issuer.yaml
+
+# 2. Проверить ClusterIssuer
+kubectl get clusterissuer
+kubectl describe clusterissuer letsencrypt-prod
+```
+
+**Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/dev/cert-manager/cluster-issuer.yaml`
+
+### Шаг 7: Создание Gateway
+
+После установки cert-manager и ClusterIssuer создайте Gateway. cert-manager автоматически создаст сертификаты для каждого HTTPS listener благодаря аннотации `cert-manager.io/cluster-issuer`.
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# 1. Применить Gateway
+kubectl apply -f manifests/dev/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway dev-gateway -n default
+
+# 3. Проверить, что Gateway получил IP адрес
+kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}'
+
+# 4. Проверить автоматически созданные сертификаты
+kubectl get certificate -n default
+
+# 5. Дождаться готовности сертификатов (может занять 1-2 минуты)
+kubectl get certificate -n default -w
+```
+
+**Важно:** 
+- Имя Gateway: `dev-gateway`
+- Gateway создается в namespace `default`
+- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+- После создания Gateway получите его IP адрес и настройте DNS записи для ваших доменов
+
+**Автоматически создаваемые сертификаты:**
+| Hostname | Secret |
+|----------|--------|
+| donweather.dev.buildbyte.ru | donweather-tls-cert |
+| api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
 
 ### Шаг 8: Установка и настройка Vault Secrets Operator для работы с внешним Vault
 
@@ -2223,7 +2227,7 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 **Важно:**
 - Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
 - Fluent Bit настроен для отправки логов в Loki через HTTP API
-- AppProject `dev-infrastructure` должен быть создан (см. Шаг 7)
+- AppProject `dev-infrastructure` должен быть создан (см. Шаг 4)
 
 #### 9.1. Настройка Fluent Bit для отправки логов в Loki
 
