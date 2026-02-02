@@ -1665,6 +1665,9 @@ kubectl get httproute -n kube-prometheus-stack
 7. Шаг 7: Создание Gateway
 8. Шаг 8: Установка Vault Secrets Operator через Argo CD
 9. Шаг 9: Установка Fluent Bit через Argo CD
+10. Шаг 10: Создание базовых Namespaces
+11. Шаг 11: Создание AppProject dev-microservices
+12. Шаг 12: Создание Argo CD Application для микросервисов
 
 **Важно:** Перед применением Application необходимо создать AppProject для организации Application:
 
@@ -2300,11 +2303,14 @@ kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|er
   - Доступность Loki из dev кластера: `curl http://<LOKI_EXTERNAL_IP>:3100/ready`
   - Firewall правила для порта 3100
 
-### Создание базовых Namespaces
+### Шаг 10: Создание базовых Namespaces
 
 Namespaces для сервисов будут создаваться вручную позже в зависимости от названий сервисов.
 
 ```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
 # Пример создания namespace для сервиса:
 kubectl create namespace <название-сервиса> --dry-run=client -o yaml | kubectl apply -f -
 
@@ -2312,7 +2318,7 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 kubectl get namespaces
 ```
 
-### Создание AppProject dev-microservices для микросервисов
+### Шаг 11: Создание AppProject dev-microservices для микросервисов
 
 AppProject `dev-microservices` используется для развертывания микросервисов в dev кластере.
 
@@ -2338,7 +2344,7 @@ kubectl describe appproject dev-microservices -n argocd
   - `developer` (группа `Developers`) — синхронизация и просмотр
   - `operator` (группа `Operators`) — просмотр и синхронизация
 
-### Создание Argo CD Application для развертывания приложений
+### Шаг 12: Создание Argo CD Application для развертывания приложений
 
 После добавления dev кластера в Argo CD и создания AppProject можно создавать Application для развертывания приложений в dev кластере.
 
