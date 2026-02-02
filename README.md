@@ -1910,58 +1910,88 @@ kubectl get httproute vault-server -n vault -o yaml
 
 #### 7.3. Настройка Kubernetes Auth в Vault для dev кластера
 
-Vault должен быть настроен для аутентификации ServiceAccount из dev кластера:
+Vault должен быть настроен для аутентификации ServiceAccount из dev кластера. Это позволит Vault Secrets Operator в dev кластере получать секреты из Vault в services кластере.
+
+**Пункт 1: Подготовка переменных для работы с Vault**
 
 ```bash
-# 1. Переключиться на services кластер (где находится Vault)
+# Переключиться на services кластер (где находится Vault)
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# 2. Аутентифицироваться в Vault
+# Получить токен Vault
 export VAULT_ADDR="http://127.0.0.1:8200"
 export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
+```
 
-# Если root token не найден, получите его:
-# kubectl exec -n vault vault-0 -- vault operator init -key-shares=1 -key-threshold=1 -format=json | jq -r '.root_token' > /tmp/vault-root-token.txt
+**Пункт 2: Создание ServiceAccount для token reviewer в dev кластере**
 
-# 3. Создать ServiceAccount для token reviewer в dev кластере
+Token reviewer — это ServiceAccount, который Vault использует для проверки JWT токенов, приходящих из dev кластера.
+
+```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Создать ServiceAccount для token reviewer в dev кластере
-# Этот ServiceAccount будет использоваться Vault для проверки токенов из dev кластера
-kubectl create serviceaccount vault-token-reviewer -n vault-secrets-operator --dry-run=client -o yaml | kubectl apply -f -
+# Создать namespace (если еще не создан)
+kubectl create namespace vault-secrets-operator --dry-run=client -o yaml | kubectl apply -f -
 
-# 4. Создать ClusterRoleBinding для token reviewer
-# Дать права на выполнение TokenReview запросов к Kubernetes API
+# Создать ServiceAccount для token reviewer
+kubectl create serviceaccount vault-token-reviewer -n vault-secrets-operator --dry-run=client -o yaml | kubectl apply -f -
+```
+
+**Пункт 3: Создание ClusterRoleBinding для token reviewer**
+
+Даём ServiceAccount права на выполнение TokenReview запросов к Kubernetes API.
+
+```bash
+# В dev кластере
 kubectl create clusterrolebinding vault-token-reviewer-auth-delegator \
   --clusterrole=system:auth-delegator \
   --serviceaccount=vault-secrets-operator:vault-token-reviewer \
   --dry-run=client -o yaml | kubectl apply -f -
+```
 
-# 5. Получить токен ServiceAccount для token reviewer
-# Этот токен будет использоваться Vault для проверки токенов из dev кластера
+**Пункт 4: Получение данных dev кластера для настройки Vault**
+
+Собираем данные, которые нужны Vault для проверки токенов из dev кластера.
+
+```bash
+# В dev кластере
+
+# 4.1. Получить токен ServiceAccount (действует 1 год)
 DEV_TOKEN_REVIEWER_JWT=$(kubectl create token vault-token-reviewer -n vault-secrets-operator --duration=8760h)
 
-# 7. Получить CA сертификат dev кластера
+# 4.2. Получить CA сертификат dev кластера
 DEV_CA_CERT=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}' | base64 -d)
 
-# 8. Получить адрес Kubernetes API dev кластера
-# Обычно это адрес из kubeconfig
+# 4.3. Получить адрес Kubernetes API dev кластера
 DEV_K8S_HOST=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
 
-# 9. Настроить Kubernetes auth в Vault для dev кластера
-# Переключиться обратно на services кластер
+# Проверить полученные значения
+echo "DEV_K8S_HOST: $DEV_K8S_HOST"
+echo "DEV_TOKEN_REVIEWER_JWT длина: ${#DEV_TOKEN_REVIEWER_JWT}"
+echo "DEV_CA_CERT длина: ${#DEV_CA_CERT}"
+```
+
+**Пункт 5: Включение Kubernetes auth в Vault для dev кластера**
+
+```bash
+# Переключиться на services кластер
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# Включить Kubernetes auth method (если еще не включен)
+# Включить Kubernetes auth method с путём kubernetes-dev
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault auth enable -path=kubernetes-dev kubernetes 2>&1 || echo 'Kubernetes auth уже включен'
 "
+```
 
-# Настроить конфигурацию Kubernetes auth для dev кластера
-# ВАЖНО: Используем токен token reviewer из dev кластера, а не из pod'а Vault
+**Пункт 6: Настройка конфигурации Kubernetes auth**
+
+Передаём Vault данные dev кластера для проверки токенов.
+
+```bash
+# В services кластере
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
@@ -1971,13 +2001,20 @@ vault write auth/kubernetes-dev/config \
   kubernetes_ca_cert='$DEV_CA_CERT' \
   disable_iss_validation=true
 "
+```
 
-# 10. Создать политику для Vault Secrets Operator из dev кластера
+**Пункт 7: Создание политики доступа для dev кластера**
+
+Политика определяет, какие секреты могут читать приложения из dev кластера.
+
+```bash
+# В services кластере
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault policy write vault-secrets-operator-dev-policy - <<'EOF'
 # Политика для Vault Secrets Operator из dev кластера
+# Разрешает чтение всех секретов
 path \"secret/data/*\" {
   capabilities = [\"read\"]
 }
@@ -1986,8 +2023,14 @@ path \"secret/metadata/*\" {
 }
 EOF
 "
+```
 
-# 11. Создать роль в Vault для Vault Secrets Operator из dev кластера
+**Пункт 8: Создание роли в Vault для Vault Secrets Operator**
+
+Роль связывает ServiceAccount из dev кластера с политикой доступа.
+
+```bash
+# В services кластере
 kubectl exec -it vault-0 -n vault -- sh -c "
 export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
@@ -1999,11 +2042,32 @@ vault write auth/kubernetes-dev/role/vault-secrets-operator \
 "
 ```
 
+**Пункт 9: Проверка настройки**
+
+```bash
+# В services кластере
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+
+# Проверить auth method
+vault auth list | grep kubernetes-dev
+
+# Проверить конфигурацию
+vault read auth/kubernetes-dev/config
+
+# Проверить политику
+vault policy read vault-secrets-operator-dev-policy
+
+# Проверить роль
+vault read auth/kubernetes-dev/role/vault-secrets-operator
+"
+```
+
 **Важно:** 
-- **Token reviewer JWT** должен быть получен из **dev кластера**, а не из pod'а Vault в services кластере
-- ServiceAccount `vault-token-reviewer` должен иметь права `system:auth-delegator` через ClusterRoleBinding
+- Token reviewer JWT должен быть получен из **dev кластера**
 - CA сертификат и адрес Kubernetes API должны соответствовать **dev кластеру**
-- Если CA сертификат слишком большой для передачи через переменную окружения, можно сохранить его в файл и использовать `kubernetes_ca_cert=@/path/to/dev-ca.pem`
+- Токен действует 1 год (`--duration=8760h`), после истечения нужно обновить
 
 #### 7.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
 
