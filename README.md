@@ -2302,6 +2302,7 @@ export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 # Применить Secret
 kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
 
+
 # Проверить, что Secret создан
 kubectl get secret dev-cluster-secret -n argocd
 ```
