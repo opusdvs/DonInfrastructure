@@ -1479,6 +1479,21 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 - Группа `GrafanaEditors` получает роль `Editor`
 - Остальные пользователи получают роль `Viewer`
 
+#### 13.4. Создание HTTPRoute для Grafana
+
+```bash
+# Применить HTTPRoute для HTTPS доступа
+kubectl apply -f manifests/services/gateway/routes/grafana-https-route.yaml
+
+# Применить HTTPRoute для HTTP→HTTPS редиректа
+kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
+
+# Проверить
+kubectl get httproute -n kube-prometheus-stack
+```
+
+После настройки HTTPRoute Grafana будет доступна по адресу: `https://grafana.buildbyte.ru`
+
 ### 14. Установка Loki (централизованное хранение логов)
 
 Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
