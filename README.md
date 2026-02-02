@@ -1158,7 +1158,7 @@ curl -I https://argo.buildbyte.ru/
 
 ### 12. Установка Jenkins
 
-#### 12.1. Сохранение секрета администратора Jenkins в Vault
+#### 12.1. Сохранение секретов Jenkins в Vault
 
 ```bash
 # Установить переменные для работы с Vault
@@ -1171,6 +1171,15 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛЬ>'
 "
+
+# Сохранить GitHub Personal Access Token
+# Создайте токен: GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+# Scopes: repo (для приватных репозиториев) или public_repo (для публичных)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/github token='<ВАШ_GITHUB_TOKEN>'
+"
 ```
 
 #### 12.2. Создание VaultStaticSecret для Jenkins
@@ -1179,12 +1188,15 @@ vault kv put secret/jenkins/admin username='admin' password='<ВАШ_ПАРОЛ�
 # Создать namespace для Jenkins
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
-# Применить VaultStaticSecret для Jenkins
+# Применить VaultStaticSecret для admin credentials
 kubectl apply -f manifests/services/jenkins/jenkins-admin-credentials-vaultstaticsecret.yaml
+
+# Применить VaultStaticSecret для GitHub token
+kubectl apply -f manifests/services/jenkins/jenkins-github-token-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n jenkins
-kubectl get secret jenkins-admin-credentials -n jenkins
+kubectl get secret -n jenkins
 ```
 
 #### 12.3. Установка Jenkins
@@ -1213,109 +1225,22 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=jenkins-co
 kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenkins-admin-password}' | base64 -d && echo
 ```
 
-#### 12.4. Настройка GitHub API Token для Jenkins
+#### 12.4. Проверка GitHub credentials в Jenkins
 
-**Важно:** Перед настройкой GitHub token убедитесь, что:
-- Jenkins установлен и работает
-- Vault Secrets Operator установлен и работает
-- VaultAuth для Vault Secrets Operator настроен
+GitHub credentials настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC и автоматически загружаются при установке.
 
-**Шаг 1: Создать Personal Access Token в GitHub**
-
-1. Перейдите в GitHub: **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
-2. Нажмите **"Generate new token (classic)"**
-3. Укажите **Note** (описание токена, например, "Jenkins CI/CD")
-4. Выберите **scopes** (права доступа):
-   - Для публичных репозиториев: `public_repo`
-   - Для приватных репозиториев: `repo` (полный доступ к репозиториям)
-   - Для работы с webhooks: `admin:repo_hook` (опционально)
-5. Нажмите **"Generate token"**
-6. Скопируйте токен (он показывается только один раз!)
-
-**Шаг 2: Сохранить GitHub Token в Vault**
-
-```bash
-# Установить переменные для работы с Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-
-# Убедиться, что KV v2 секретный движок включен
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-"
-
-# Сохранить GitHub Personal Access Token
-# Замените <ВАШ_GITHUB_TOKEN> на реальный токен из GitHub
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/jenkins/github \
-  token='<ВАШ_GITHUB_TOKEN>'
-"
-
-# Проверить, что секрет сохранен правильно
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/jenkins/github
-"
-```
-
-**Шаг 3: Создать VaultStaticSecret для синхронизации GitHub Token**
-
-```bash
-# Создать VaultStaticSecret для синхронизации GitHub token
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: jenkins-github-token
-  namespace: jenkins
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: jenkins/github
-  refreshAfter: 60s
-  destination:
-    name: jenkins-github-token
-    create: true
-EOF
-
-# Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret jenkins-github-token -n jenkins
-kubectl describe vaultstaticsecret jenkins-github-token -n jenkins
-
-# Проверить созданный Secret
-kubectl get secret jenkins-github-token -n jenkins
-
-# Проверить значение токена (должно быть реальное значение)
-kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
-```
-
-**Шаг 4: Обновить Jenkins с конфигурацией GitHub credentials**
-
-GitHub credentials уже настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
-
-```bash
-# Обновить Jenkins с новой конфигурацией
-helm upgrade jenkins jenkins/jenkins \
-  --namespace jenkins \
-  -f helm/services/jenkins/jenkins-values.yaml
-
-# Проверить, что Jenkins перезапустился
-kubectl get pods -n jenkins
-kubectl logs -f deployment/jenkins -n jenkins | grep -i "github\|credentials"
-```
-
-**Проверка GitHub credentials в Jenkins:**
+**Проверка:**
 
 1. Откройте Jenkins: `https://jenkins.buildbyte.ru`
 2. Перейдите в **Manage Jenkins** → **Credentials** → **System** → **Global credentials**
 3. Должен быть создан credential с ID `github-token` типа "Secret text"
 4. Этот credential можно использовать в Pipeline jobs для доступа к GitHub репозиториям
+
+```bash
+# Проверить секрет GitHub token
+kubectl get secret jenkins-github-token -n jenkins
+kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
+```
 
 #### 12.5. Настройка Docker Registry для Jenkins
 
