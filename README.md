@@ -2270,118 +2270,57 @@ kubectl get namespaces
 
 Argo CD в services кластере должен быть настроен для управления приложениями в dev кластере.
 
-**Примечание:** Поскольку в Argo CD настроена авторизация через Keycloak (OIDC), используется способ через Secret, который не требует авторизации через CLI.
+**Пункт 1: Получить данные dev кластера**
 
 ```bash
-# 1. Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+# Адрес API сервера dev кластера
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.server}')
+echo "Server: $DEV_CLUSTER_SERVER"
 
-# 2. Создать Secret с kubeconfig dev кластера для Argo CD
-# Получить адрес API сервера dev кластера
-DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
+# CA сертификат (base64)
+DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
+echo "CA Data: ${DEV_CA_DATA:0:50}..."
 
-# Создать Secret с правильным форматом config
-# Argo CD ожидает, что config будет содержать полный kubeconfig в формате YAML
-# Используем временный файл для безопасной обработки многострочного YAML
-
-# Создать временные файлы
-TMP_CONFIG=$(mktemp)
-TMP_SECRET=$(mktemp)
-
-# Получить kubeconfig
-kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten > "$TMP_CONFIG"
-
-# Создать манифест Secret с stringData
-cat > "$TMP_SECRET" <<'SECRET_HEADER'
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dev-cluster-secret
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: cluster
-type: Opaque
-stringData:
-  name: dev-cluster
-  server: 
-SECRET_HEADER
-
-# Добавить server (без подстановки переменных в heredoc)
-echo "  $DEV_CLUSTER_SERVER" >> "$TMP_SECRET"
-echo "  config: |" >> "$TMP_SECRET"
-
-# Добавить kubeconfig с правильными отступами (4 пробела для YAML)
-sed 's/^/    /' "$TMP_CONFIG" >> "$TMP_SECRET"
-
-# Применить манифест
-kubectl apply -f "$TMP_SECRET"
-
-# Удалить временные файлы
-rm -f "$TMP_CONFIG" "$TMP_SECRET"
-
-# Способ 2: Альтернативный способ с JSON форматом config (если способ 1 не работает)
-# Argo CD может ожидать config в формате JSON строки
-# Создать config как JSON объект
-CONFIG_JSON='{"tlsClientConfig":{"insecure":false}}'
-
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dev-cluster-secret
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: cluster
-type: Opaque
-stringData:
-  name: dev-cluster
-  server: $DEV_CLUSTER_SERVER
-  config: '$CONFIG_JSON'
-EOF
-
-# Примечание: Если нужна аутентификация, добавьте в CONFIG_JSON:
-# - bearerToken: токен для аутентификации
-# - tlsClientConfig.caData: CA сертификат (base64)
-# - tlsClientConfig.certData: клиентский сертификат (base64)
-# - tlsClientConfig.keyData: клиентский ключ (base64)
-
-# 3. Проверить, что Secret создан
-kubectl get secret dev-cluster-secret -n argocd
-kubectl describe secret dev-cluster-secret -n argocd
-
-# 4. Проверить статус кластера в Argo CD через веб-интерфейс
-# Откройте https://argo.buildbyte.ru
-# Авторизуйтесь через Keycloak
-# Перейдите в Settings > Clusters
-# Должен отображаться кластер dev-cluster со статусом "Connected"
+# Токен (если есть в kubeconfig)
+DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.users[].user.token}')
+echo "Token: ${DEV_TOKEN:0:20}..."
 ```
 
-**Диагностика, если кластер не отображается в интерфейсе:**
+**Пункт 2: Заполнить manifest файл**
+
+Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
+- Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
+- Замените `<DEV_BEARER_TOKEN>` на токен
+- Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
+
+**Пункт 3: Применить Secret**
 
 ```bash
-# 1. Проверить формат Secret
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить Secret
+kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
+
+# Проверить, что Secret создан
+kubectl get secret dev-cluster-secret -n argocd
+```
+
+**Пункт 4: Проверить в Argo CD**
+
+1. Откройте https://argo.buildbyte.ru
+2. Авторизуйтесь через Keycloak
+3. Перейдите в **Settings** → **Clusters**
+4. Должен отображаться кластер `dev-cluster` со статусом "Connected"
+
+**Диагностика, если кластер не отображается:**
+
+```bash
+# Проверить Secret
 kubectl get secret dev-cluster-secret -n argocd -o yaml
 
-# Убедитесь, что Secret содержит:
-# - name: dev-cluster (в data или stringData)
-# - server: адрес API сервера dev кластера
-# - config: полный kubeconfig в формате YAML
-# - метка: argocd.argoproj.io/secret-type: cluster
-
-# Проверить декодированные значения (если Secret использует data вместо stringData)
-kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
-kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
-kubectl get secret dev-cluster-secret -n argocd -o jsonpath='{.data.config}' | base64 -d | head -20
-
-# Если Secret использует stringData, проверить через describe
-kubectl describe secret dev-cluster-secret -n argocd
-
-# 2. Проверить логи Argo CD Application Controller
+# Проверить логи Argo CD
 kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
-
-# 3. Проверить, что Argo CD может подключиться к dev кластеру
-# Переключиться на dev кластер
-export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
 # Проверить доступность API сервера
 kubectl cluster-info
