@@ -1,33 +1,71 @@
 ---
 # Gateway ресурс для развертывания Gateway API с поддержкой HTTPS (Dev кластер)
-# Использует Secret с TLS сертификатом
-# Secret может быть создан вручную или автоматически через cert-manager (см. cert-manager/gateway-certificate.yaml)
+#
+# cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+# благодаря аннотации cert-manager.io/cluster-issuer
+#
+# ВАЖНО: Для получения сертификатов через HTTP-01 challenge необходимо:
+#   1. Сначала применить HTTP redirect routes (они позволят cert-manager
+#      создать временные HTTPRoute для ACME challenge)
+#   2. cert-manager создаст HTTPRoute для /.well-known/acme-challenge/
+#      который будет иметь приоритет над redirect routes
+#
+# Порядок:
+#   1. Создать ClusterIssuer (см. cert-manager/cluster-issuer.yaml)
+#   2. Применить HTTP redirect routes для всех hostname
+#   3. Применить этот Gateway
+#   4. cert-manager автоматически создаст сертификаты для каждого hostname
+#
+# Проверка:
+#   kubectl get certificate -n default
+#   kubectl get secret -n default | grep tls
+#
+# Добавление нового приложения:
+#   1. Добавить новый HTTPS listener с hostname и certificateRefs
+#   2. cert-manager автоматически создаст сертификат
+#   3. Создать HTTPRoute для приложения
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: dev-gateway
   annotations:
+    # cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   gatewayClassName: nginx
   listeners:
+    # HTTP listener для HTTP-01 challenge и редиректов
     - name: http
       protocol: HTTP
       port: 80
-      # hostname не указан - позволяет обрабатывать все hostnames для HTTP-01 challenge
-      # cert-manager создает HTTPRoute для /.well-known/acme-challenge/ без hostname
       allowedRoutes:
         namespaces:
           from: All
-    - name: https
+
+    # HTTPS listener для DonWeather Front
+    - name: https-donweather
       protocol: HTTPS
       port: 443
-      # hostname не указан - позволяет обрабатывать все hostnames через HTTPRoute
-      # Каждый HTTPRoute указывает свой hostname для приложений в dev окружении
+      hostname: donweather.dev.buildbyte.ru
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: gateway-tls-cert # Secret создается автоматически cert-manager через Certificate ресурс
+            name: donweather-tls-cert
+      allowedRoutes:
+        namespaces:
+          from: All
+
+    # HTTPS listener для DonWeather API
+    - name: https-donweather-api
+      protocol: HTTPS
+      port: 443
+      hostname: api.donweather.dev.buildbyte.ru
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: donweather-api-tls-cert
       allowedRoutes:
         namespaces:
           from: All

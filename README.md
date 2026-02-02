@@ -1771,38 +1771,11 @@ kubectl get gatewayclass
 kubectl wait --for=condition=ready pod -l app=nginx-gateway-fabric -n nginx-gateway --timeout=300s
 ```
 
-**Примечание:** Gateway API опционален. Если ingress не требуется, этот шаг можно пропустить.
+### Шаг 4: Установка cert-manager
 
-### Шаг 4: Создание Gateway
+cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt.
 
-После установки Gateway API необходимо создать Gateway ресурс для обработки входящего трафика:
-
-```bash
-# 1. Применить Gateway
-kubectl apply -f manifests/dev/gateway/gateway.yaml
-
-# 2. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway dev-gateway -n default
-
-# 3. Проверить, что Gateway получил IP адрес
-kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}'
-```
-
-**Примечание:** 
-- HTTP listener будет работать сразу после создания Gateway
-- HTTPS listener не будет работать до создания Secret `gateway-tls-cert` (это будет сделано на следующем шаге)
-- Gateway должен быть создан перед ClusterIssuer, так как ClusterIssuer ссылается на Gateway для HTTP-01 challenge
-- После создания Gateway получите его IP адрес и настройте DNS записи для ваших доменов
-
-**Важно:** 
-- Имя Gateway: `dev-gateway` (используется в ClusterIssuer)
-- Gateway создается в namespace `default`
-- Убедитесь, что Gateway получил внешний IP адрес перед настройкой DNS
-
-### Шаг 5: Установка cert-manager
-
-cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt:
+**Важно:** cert-manager должен быть установлен ДО создания Gateway, так как Gateway использует аннотацию `cert-manager.io/cluster-issuer` для автоматического получения сертификатов.
 
 ```bash
 # 1. Добавить Helm репозиторий
@@ -1825,48 +1798,59 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manage
 
 **Важно:** 
 - Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
-- Перед установкой убедитесь, что файл `helm/dev/cert-manager/cert-manager-values.yaml` настроен правильно
 
-**Примечание:** cert-manager опционален, если TLS сертификаты не требуются. Однако рекомендуется установить его для безопасного доступа к приложениям.
-
-#### 5.1. Создание ClusterIssuer и сертификата (опционально)
-
-После установки cert-manager можно создать ClusterIssuer и Certificate для автоматической выдачи TLS сертификатов:
+### Шаг 5: Создание ClusterIssuer
 
 ```bash
-# 1. Применить ClusterIssuer (отредактируйте email и gateway перед применением!)
-# ВАЖНО: Gateway должен быть создан, так как ClusterIssuer ссылается на него для HTTP-01 challenge
+# 1. Применить ClusterIssuer (отредактируйте email перед применением!)
 kubectl apply -f manifests/dev/cert-manager/cluster-issuer.yaml
 
 # 2. Проверить ClusterIssuer
 kubectl get clusterissuer
 kubectl describe clusterissuer letsencrypt-prod
-
-# 3. Применить Certificate (отредактируйте dnsNames перед применением!)
-kubectl apply -f manifests/dev/cert-manager/gateway-certificate.yaml
-
-# 4. Проверить статус Certificate
-kubectl get certificate -n default
-kubectl describe certificate gateway-tls-cert -n default
-
-# 5. Дождаться создания Secret (может занять несколько минут)
-kubectl wait --for=condition=ready certificate gateway-tls-cert -n default --timeout=600s
-kubectl get secret gateway-tls-cert -n default
 ```
 
-**Важно:**
-- Перед применением ClusterIssuer отредактируйте `manifests/dev/cert-manager/cluster-issuer.yaml`:
-  - Замените `admin@buildbyte.ru` на ваш реальный email
-  - Убедитесь, что `parentRefs[0].name` указывает на правильный Gateway (по умолчанию `dev-gateway`)
-- Перед применением Certificate отредактируйте `manifests/dev/cert-manager/gateway-certificate.yaml`:
-  - Добавьте домены ваших приложений в `dnsNames`
-  - Убедитесь, что `secretName` совпадает с `certificateRefs` в Gateway
+**Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/dev/cert-manager/cluster-issuer.yaml`
 
-### Шаг 6: Установка и настройка Vault Secrets Operator для работы с внешним Vault
+### Шаг 6: Создание Gateway
+
+После установки cert-manager и ClusterIssuer создайте Gateway. cert-manager автоматически создаст сертификаты для каждого HTTPS listener благодаря аннотации `cert-manager.io/cluster-issuer`.
+
+```bash
+# 1. Применить Gateway
+kubectl apply -f manifests/dev/gateway/gateway.yaml
+
+# 2. Проверить статус Gateway
+kubectl get gateway -n default
+kubectl describe gateway dev-gateway -n default
+
+# 3. Проверить, что Gateway получил IP адрес
+kubectl get gateway dev-gateway -n default -o jsonpath='{.status.addresses[0].value}'
+
+# 4. Проверить автоматически созданные сертификаты
+kubectl get certificate -n default
+
+# 5. Дождаться готовности сертификатов (может занять 1-2 минуты)
+kubectl get certificate -n default -w
+```
+
+**Важно:** 
+- Имя Gateway: `dev-gateway`
+- Gateway создается в namespace `default`
+- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
+- После создания Gateway получите его IP адрес и настройте DNS записи для ваших доменов
+
+**Автоматически создаваемые сертификаты:**
+| Hostname | Secret |
+|----------|--------|
+| donweather.dev.buildbyte.ru | donweather-tls-cert |
+| api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
+
+### Шаг 7: Установка и настройка Vault Secrets Operator для работы с внешним Vault
 
 Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
 
-#### 6.1. Установка Vault Secrets Operator
+#### 7.1. Установка Vault Secrets Operator
 
 ```bash
 # 1. Добавить Helm репозиторий HashiCorp (если еще не добавлен)
@@ -1888,7 +1872,7 @@ kubectl get crd | grep secrets.hashicorp.com
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vault-secrets-operator -n vault-secrets-operator --timeout=300s
 ```
 
-#### 6.2. Проверка HTTPRoute для Vault в services кластере
+#### 7.2. Проверка HTTPRoute для Vault в services кластере
 
 Vault доступен через HTTPRoute в services кластере по адресу `https://vault.buildbyte.ru`.
 
@@ -1924,7 +1908,7 @@ kubectl get httproute vault-server -n vault -o yaml
 - **HTTPS:** `https://vault.buildbyte.ru:443` (рекомендуется)
 - **HTTP:** `http://vault.buildbyte.ru:80` (будет редиректить на HTTPS)
 
-#### 6.3. Настройка Kubernetes Auth в Vault для dev кластера
+#### 7.3. Настройка Kubernetes Auth в Vault для dev кластера
 
 Vault должен быть настроен для аутентификации ServiceAccount из dev кластера:
 
@@ -2021,7 +2005,7 @@ vault write auth/kubernetes-dev/role/vault-secrets-operator \
 - CA сертификат и адрес Kubernetes API должны соответствовать **dev кластеру**
 - Если CA сертификат слишком большой для передачи через переменную окружения, можно сохранить его в файл и использовать `kubernetes_ca_cert=@/path/to/dev-ca.pem`
 
-#### 6.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
+#### 7.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
 
 Создайте VaultConnection и VaultAuth для подключения к Vault в services кластере:
 
@@ -2070,7 +2054,7 @@ kubectl describe vaultauth vault-auth -n vault-secrets-operator
 - HTTPRoute `vault-server` должен быть применен в services кластере
 - Auth method mount: `kubernetes-dev` (отдельный от services кластера)
 
-### Шаг 7: Установка Fluent Bit (сбор логов) в dev кластере
+### Шаг 8: Установка Fluent Bit (сбор логов) в dev кластере
 
 Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
 
@@ -2079,7 +2063,7 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 - Fluent Bit настроен для отправки логов в Loki через HTTP API
 - Необходимо обновить конфигурацию Fluent Bit с внешним IP адресом Loki перед установкой
 
-#### 7.1. Настройка Fluent Bit для отправки логов в Loki
+#### 8.1. Настройка Fluent Bit для отправки логов в Loki
 
 Перед установкой Fluent Bit необходимо обновить конфигурацию с внешним IP адресом Loki:
 
@@ -2103,7 +2087,7 @@ grep -A 2 "Host.*$LOKI_EXTERNAL_IP" helm/dev/fluent-bit/fluent-bit-values.yaml
 - IP адрес можно получить командой: `kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
 - Если LoadBalancer еще не получил IP адрес, дождитесь его назначения перед настройкой Fluent Bit
 
-#### 7.2. Развертывание Fluent Bit через Argo CD Application
+#### 8.2. Развертывание Fluent Bit через Argo CD Application
 
 Fluent Bit разворачивается через Argo CD Application в services кластере:
 
@@ -2122,7 +2106,7 @@ kubectl describe application fluent-bit-dev -n argocd
 kubectl wait --for=condition=Synced application fluent-bit-dev -n argocd --timeout=300s
 ```
 
-#### 7.3. Проверка установки Fluent Bit
+#### 8.3. Проверка установки Fluent Bit
 
 ```bash
 # Переключиться на dev кластер
