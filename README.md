@@ -1312,13 +1312,166 @@ Docker Registry credentials синхронизируются из Vault чере
 - GitHub credentials автоматически создаются в Jenkins через JCasC с ID `github-token`
 - Для использования в Pipeline jobs укажите `credentialsId: "github-token"` в конфигурации SCM
 
-### 13. Установка Prometheus Kube Stack (Prometheus + Grafana)
+### 13. Установка Loki (централизованное хранение логов)
+
+Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
+
+**Важно:** 
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 15), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
+- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 14) и перед настройкой Fluent Bit в dev кластере, так как Fluent Bit будет отправлять логи в Loki.
+
+#### 13.1. Установка Loki через Helm
+
+Loki устанавливается через Helm chart в services кластере:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Добавить Helm репозиторий Grafana
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# 2. Создать namespace для Loki (если еще не создан)
+kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить Loki
+helm upgrade --install loki grafana/loki \
+  --namespace logging \
+  --create-namespace \
+  -f helm/services/loki/loki-values.yaml
+
+# 4. Проверить установку Loki
+kubectl get pods -n logging -l app.kubernetes.io/name=loki
+kubectl get services -n logging -l app.kubernetes.io/name=loki
+
+# 5. Дождаться готовности Loki
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=loki -n logging --timeout=300s
+```
+
+**Важно:**
+- Loki использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища (50Gi по умолчанию)
+- Конфигурация Loki находится в `helm/services/loki/loki-values.yaml`
+- Loki использует файловую систему для хранения (filesystem storage type)
+- Период хранения логов: 720 часов (30 дней) по умолчанию
+
+#### 13.2. Получение внешнего IP адреса LoadBalancer Service
+
+После установки Loki через Helm chart автоматически создается LoadBalancer Service для gateway. Получите внешний IP адрес:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Дождаться получения внешнего IP адреса LoadBalancer Service
+kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' svc loki-gateway -n logging --timeout=300s
+
+# Получить внешний IP адрес Loki
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Loki доступен по адресу: $LOKI_EXTERNAL_IP:3100"
+```
+
+**Важно:**
+- LoadBalancer Service создается автоматически при установке Loki через Helm chart (настроено в `helm/services/loki/loki-values.yaml`)
+- Имя сервиса: `loki-gateway` (если release name = `loki`)
+- Запишите внешний IP адрес Loki - он понадобится для настройки Fluent Bit в dev кластере
+- Убедитесь, что firewall разрешает подключения к порту 3100 с IP адресов dev кластера
+
+#### 13.3. Проверка доступности Loki
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Получить внешний IP адрес Loki
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Проверить доступность Loki через HTTP API
+curl -v http://$LOKI_EXTERNAL_IP:3100/ready
+
+# Проверить метрики Loki
+curl http://$LOKI_EXTERNAL_IP:3100/metrics | head -20
+```
+
+**Важно:**
+- Endpoint `/ready` должен вернуть статус `200 OK`
+- Если Loki недоступен, проверьте:
+  - Статус подов Loki: `kubectl get pods -n logging -l app.kubernetes.io/name=loki`
+  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
+  - Статус LoadBalancer Service: `kubectl describe svc loki-gateway -n logging`
+
+### 14. Установка Fluent Bit (сбор логов) в services кластере
+
+Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла services кластера, отправляя их в Loki.
+
+**Важно:**
+- Loki должен быть развернут перед установкой Fluent Bit (см. раздел 13)
+- Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
+- Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
+
+#### 14.1. Установка Fluent Bit через Helm
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Добавить Helm репозиторий Fluent
+helm repo add fluent https://fluent.github.io/helm-charts
+helm repo update
+
+# 2. Создать namespace для Fluent Bit (если еще не создан)
+kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Установить Fluent Bit
+helm upgrade --install fluent-bit fluent/fluent-bit \
+  --namespace logging \
+  --create-namespace \
+  -f helm/services/fluent-bit/fluent-bit-values.yaml
+
+# 4. Проверить установку
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
+kubectl get daemonset -n logging fluent-bit
+
+# 5. Дождаться готовности Fluent Bit
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fluent-bit -n logging --timeout=300s
+```
+
+#### 14.2. Проверка установки Fluent Bit
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# 1. Проверить установку Fluent Bit
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
+kubectl get daemonset -n logging fluent-bit
+
+# 2. Проверить, что Fluent Bit запущен на всех узлах
+kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit -o wide
+
+# 3. Посмотреть логи Fluent Bit (должны быть записи о запуске и отправке логов в Loki)
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=100
+
+# 4. Проверить, что Fluent Bit успешно отправляет логи в Loki
+# В логах не должно быть ошибок подключения к Loki
+kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|error\|failed"
+```
+
+**Важно:**
+- Fluent Bit разворачивается как DaemonSet, по одному поду на каждом узле services кластера
+- Логи отправляются в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (ClusterIP)
+- Если Fluent Bit не может подключиться к Loki, проверьте:
+  - Доступность Loki: `kubectl get svc loki-gateway -n logging`
+  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
+  - Логи Fluent Bit: `kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=50`
+
+### 15. Установка Prometheus Kube Stack (Prometheus + Grafana)
 
 **Важно:** 
 - Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через Vault Secrets Operator.
 - **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana (`additionalDataSources` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`). Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен.
 
-#### 13.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
+#### 15.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
 
 Секрет для Grafana должен быть создан перед установкой Prometheus Kube Stack:
 
@@ -1371,7 +1524,7 @@ kubectl describe vaultstaticsecret grafana-admin-credentials -n kube-prometheus-
 kubectl get secret grafana-admin -n kube-prometheus-stack
 ```
 
-#### 13.2. Настройка OIDC для Grafana через Keycloak
+#### 15.2. Настройка OIDC для Grafana через Keycloak
 
 **Важно:** OIDC секрет должен быть создан ДО установки Prometheus Kube Stack, чтобы Grafana сразу использовала OIDC аутентификацию.
 
@@ -1427,9 +1580,9 @@ kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
 kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
 ```
 
-#### 13.3. Установка Prometheus Kube Stack
+#### 15.3. Установка Prometheus Kube Stack
 
-**Важно:** Убедитесь, что Loki развернут (см. раздел 14) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
+**Важно:** Убедитесь, что Loki развернут (см. раздел 13) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
 
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
@@ -1456,7 +1609,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
 - Секреты `grafana-admin` и `grafana-oidc-secret` должны быть созданы через Vault Secrets Operator перед установкой
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 14), так как Loki настроен как источник данных в Grafana через `additionalDataSources`
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana через `additionalDataSources`
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -1479,7 +1632,7 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 - Группа `GrafanaEditors` получает роль `Editor`
 - Остальные пользователи получают роль `Viewer`
 
-#### 13.4. Создание HTTPRoute для Grafana
+#### 15.4. Создание HTTPRoute для Grafana
 
 ```bash
 # Применить HTTPRoute для HTTPS доступа
@@ -1493,161 +1646,6 @@ kubectl get httproute -n kube-prometheus-stack
 ```
 
 После настройки HTTPRoute Grafana будет доступна по адресу: `https://grafana.buildbyte.ru`
-
-### 14. Установка Loki (централизованное хранение логов)
-
-Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
-
-**Важно:** 
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 14), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
-- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 15) и перед настройкой Fluent Bit в dev кластере, так как Fluent Bit будет отправлять логи в Loki.
-
-#### 14.1. Установка Loki через Helm
-
-Loki устанавливается через Helm chart в services кластере:
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# 1. Добавить Helm репозиторий Grafana
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo update
-
-# 2. Создать namespace для Loki (если еще не создан)
-kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Установить Loki
-helm upgrade --install loki grafana/loki \
-  --namespace logging \
-  --create-namespace \
-  -f helm/services/loki/loki-values.yaml
-
-# 4. Проверить установку Loki
-kubectl get pods -n logging -l app.kubernetes.io/name=loki
-kubectl get services -n logging -l app.kubernetes.io/name=loki
-
-# 5. Дождаться готовности Loki
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=loki -n logging --timeout=300s
-```
-
-**Важно:**
-- Loki использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища (50Gi по умолчанию)
-- Конфигурация Loki находится в `helm/services/loki/loki-values.yaml`
-- Loki использует файловую систему для хранения (filesystem storage type)
-- Период хранения логов: 720 часов (30 дней) по умолчанию
-- Chart версия: `6.21.0` (указана в `helm/services/loki/loki-values.yaml` или можно указать через `--version`)
-
-#### 14.2. Получение внешнего IP адреса LoadBalancer Service
-
-После установки Loki через Helm chart автоматически создается LoadBalancer Service для gateway. Получите внешний IP адрес:
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Дождаться получения внешнего IP адреса LoadBalancer Service
-kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' svc loki-gateway -n logging --timeout=300s
-
-# Получить внешний IP адрес Loki
-LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo "Loki доступен по адресу: $LOKI_EXTERNAL_IP:3100"
-```
-
-**Важно:**
-- LoadBalancer Service создается автоматически при установке Loki через Helm chart (настроено в `helm/services/loki/loki-values.yaml`)
-- Имя сервиса: `loki-gateway` (если release name = `loki`)
-- Запишите внешний IP адрес Loki - он понадобится для настройки Fluent Bit в dev кластере
-- Убедитесь, что firewall разрешает подключения к порту 3100 с IP адресов dev кластера
-- Для production рекомендуется использовать VPN или приватную сеть вместо публичного LoadBalancer
-
-#### 14.3. Проверка доступности Loki
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Получить внешний IP адрес Loki
-LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-# Проверить доступность Loki через HTTP API
-curl -v http://$LOKI_EXTERNAL_IP:3100/ready
-
-# Проверить метрики Loki
-curl http://$LOKI_EXTERNAL_IP:3100/metrics | head -20
-```
-
-**Важно:**
-- Endpoint `/ready` должен вернуть статус `200 OK`
-- Если Loki недоступен, проверьте:
-  - Статус подов Loki: `kubectl get pods -n logging -l app.kubernetes.io/name=loki`
-  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
-  - Статус LoadBalancer Service: `kubectl describe svc loki-gateway -n logging`
-
-### 15. Установка Fluent Bit (сбор логов) в services кластере
-
-Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла services кластера, отправляя их в Loki.
-
-**Важно:**
-- Loki должен быть развернут перед установкой Fluent Bit (см. раздел 13)
-- Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
-- Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
-
-#### 15.1. Установка Fluent Bit через Helm
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# 1. Добавить Helm репозиторий Fluent
-helm repo add fluent https://fluent.github.io/helm-charts
-helm repo update
-
-# 2. Создать namespace для Fluent Bit (если еще не создан)
-kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
-
-# 3. Установить Fluent Bit
-helm upgrade --install fluent-bit fluent/fluent-bit \
-  --namespace logging \
-  --create-namespace \
-  -f helm/services/fluent-bit/fluent-bit-values.yaml
-
-# 4. Проверить установку
-kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
-kubectl get daemonset -n logging fluent-bit
-
-# 5. Дождаться готовности Fluent Bit
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fluent-bit -n logging --timeout=300s
-```
-
-#### 15.2. Проверка установки Fluent Bit
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# 1. Проверить установку Fluent Bit
-kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
-kubectl get daemonset -n logging fluent-bit
-
-# 2. Проверить, что Fluent Bit запущен на всех узлах
-kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit -o wide
-
-# 3. Посмотреть логи Fluent Bit (должны быть записи о запуске и отправке логов в Loki)
-kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=100
-
-# 4. Проверить, что Fluent Bit успешно отправляет логи в Loki
-# В логах не должно быть ошибок подключения к Loki
-kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|error\|failed"
-```
-
-**Важно:**
-- Fluent Bit разворачивается как DaemonSet, по одному поду на каждом узле services кластера
-- Логи отправляются в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (ClusterIP)
-- Если Fluent Bit не может подключиться к Loki, проверьте:
-  - Доступность Loki: `kubectl get svc loki-gateway -n logging`
-  - Логи Loki: `kubectl logs -n logging -l app.kubernetes.io/name=loki --tail=50`
-  - Логи Fluent Bit: `kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit --tail=50`
 
 ### 16. Установка Jaeger
 
