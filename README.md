@@ -1180,6 +1180,29 @@ export VAULT_ADDR='http://127.0.0.1:8200'
 export VAULT_TOKEN='$VAULT_TOKEN'
 vault kv put secret/jenkins/github token='<ВАШ_GITHUB_TOKEN>'
 "
+
+# Сохранить Docker Registry credentials
+# Для Timeweb Container Registry используется api_token вместо password
+# Данные для buildbyte-container-registry:
+#   Домен: buildbyte-container-registry.registry.twcstorage.ru
+#   Username: buildbyte-container-registry
+#   API Token: (сохраняется в поле api_token)
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/jenkins/docker-registry \
+  username='buildbyte-container-registry' \
+  api_token='<ВАШ_API_TOKEN>'
+"
+
+# Проверить, что секреты сохранены правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/jenkins/admin
+vault kv get secret/jenkins/github
+vault kv get secret/jenkins/docker-registry
+"
 ```
 
 #### 12.2. Создание VaultStaticSecret для Jenkins
@@ -1194,9 +1217,19 @@ kubectl apply -f manifests/services/jenkins/jenkins-admin-credentials-vaultstati
 # Применить VaultStaticSecret для GitHub token
 kubectl apply -f manifests/services/jenkins/jenkins-github-token-vaultstaticsecret.yaml
 
+# Применить VaultStaticSecret для Docker Registry credentials
+kubectl apply -f manifests/services/jenkins/jenkins-docker-registry-vaultstaticsecret.yaml
+
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n jenkins
 kubectl get secret -n jenkins
+
+# Дождаться синхронизации Docker Registry credentials
+kubectl wait --for=jsonpath='{.status.secretMAC}'='' vaultstaticsecret/jenkins-docker-registry -n jenkins --timeout=60s 2>/dev/null || sleep 5
+
+# Проверить значения Docker Registry credentials (должны быть реальные значения)
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.username}' | base64 -d && echo
+kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.api_token}' | base64 -d && echo
 ```
 
 #### 12.3. Установка Jenkins
@@ -1242,102 +1275,11 @@ kubectl get secret jenkins-github-token -n jenkins
 kubectl get secret jenkins-github-token -n jenkins -o jsonpath='{.data.token}' | base64 -d && echo
 ```
 
-#### 12.5. Настройка Docker Registry для Jenkins
+#### 12.5. Проверка и использование Docker Registry credentials в Jenkins
 
-**Важно:** Перед настройкой Docker Registry убедитесь, что:
-- Docker Registry создан в панели управления облака (см. раздел "Создание Docker Registry в панели управления облака")
-- Jenkins установлен и работает
-- Vault Secrets Operator установлен и работает
-- VaultAuth для Vault Secrets Operator настроен
+Docker Registry credentials синхронизируются из Vault через VaultStaticSecret и автоматически загружаются в Jenkins через JCasC при установке.
 
-**Примечание:** Для Timeweb Container Registry используется **API Token** вместо пароля. В Vault credentials сохраняются с полем `api_token`, которое затем используется как `password` в Jenkins credentials для совместимости с Docker login.
-
-**Шаг 1: Сохранить Docker Registry credentials в Vault**
-
-```bash
-# Установить переменные для работы с Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-
-# Убедиться, что KV v2 секретный движок включен
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-"
-
-# Сохранить Docker Registry credentials
-# Для Timeweb Container Registry используется api_token вместо password
-# Данные для buildbyte-container-registry:
-#   Домен: buildbyte-container-registry.registry.twcstorage.ru
-#   Username: buildbyte-container-registry
-#   API Token: (сохраняется в поле api_token)
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/jenkins/docker-registry \
-  username='buildbyte-container-registry' \
-  api_token='<ВАШ_API_TOKEN>'
-"
-
-# Проверить, что секрет сохранен правильно
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/jenkins/docker-registry
-"
-```
-
-**Шаг 2: Создать VaultStaticSecret для синхронизации Docker Registry credentials**
-
-```bash
-# Создать VaultStaticSecret для синхронизации Docker Registry credentials
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: jenkins-docker-registry
-  namespace: jenkins
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: jenkins/docker-registry
-  refreshAfter: 60s
-  destination:
-    name: jenkins-docker-registry
-    create: true
-EOF
-
-# Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret jenkins-docker-registry -n jenkins
-kubectl describe vaultstaticsecret jenkins-docker-registry -n jenkins
-
-# Дождаться синхронизации (может занять несколько секунд)
-kubectl wait --for=condition=Ready externalsecret jenkins-docker-registry -n jenkins --timeout=60s
-
-# Проверить созданный Secret
-kubectl get secret jenkins-docker-registry -n jenkins
-
-# Проверить значения credentials (должны быть реальные значения, а не строки с $)
-kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.username}' | base64 -d && echo
-kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.password}' | base64 -d && echo
-```
-
-**Шаг 3: Обновить Jenkins с конфигурацией Docker Registry credentials**
-
-Docker Registry credentials уже настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC. Обновите Jenkins:
-
-```bash
-# Обновить Jenkins с новой конфигурацией
-helm upgrade jenkins jenkins/jenkins \
-  --namespace jenkins \
-  -f helm/services/jenkins/jenkins-values.yaml
-
-# Проверить, что Jenkins перезапустился
-kubectl get pods -n jenkins
-kubectl logs -f deployment/jenkins -n jenkins | grep -i "docker\|credentials"
-```
+Для Timeweb Container Registry используется **API Token** вместо пароля. В Vault credentials сохраняются с полем `api_token`, которое используется как `password` в Jenkins credentials для совместимости с Docker login.
 
 **Проверка Docker Registry credentials в Jenkins:**
 
