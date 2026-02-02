@@ -2101,54 +2101,58 @@ kubectl describe vaultauth default -n vault-secrets-operator
 
 #### 8.1. Добавление dev кластера в Argo CD
 
-Добавление кластера выполняется через создание Secret с kubeconfig:
+**Пункт 1: Получить данные dev кластера**
+
+```bash
+# Адрес API сервера dev кластера
+DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.server}')
+echo "Server: $DEV_CLUSTER_SERVER"
+
+# CA сертификат (base64)
+DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
+echo "CA Data: ${DEV_CA_DATA:0:50}..."
+
+# Токен (если есть в kubeconfig)
+DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.users[].user.token}')
+echo "Token: ${DEV_TOKEN:0:20}..."
+```
+
+**Пункт 2: Заполнить manifest файл**
+
+Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
+- Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
+- Замените `<DEV_BEARER_TOKEN>` на токен
+- Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
+
+**Пункт 3: Применить Secret**
 
 ```bash
 # Переключиться на services кластер
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
-# Получить адрес API сервера dev кластера
-DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
-
-# Получить CA сертификат dev кластера (base64)
-DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
-
-# Получить токен для аутентификации (из kubeconfig или создать ServiceAccount)
-# Вариант: использовать токен из kubeconfig
-DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.users[].user.token}')
-
-# Создать Secret для Argo CD
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dev-cluster-secret
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: cluster
-type: Opaque
-stringData:
-  name: dev-cluster
-  server: "$DEV_CLUSTER_SERVER"
-  config: |
-    {
-      "bearerToken": "$DEV_TOKEN",
-      "tlsClientConfig": {
-        "insecure": false,
-        "caData": "$DEV_CA_DATA"
-      }
-    }
-EOF
+# Применить Secret
+kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
 
 # Проверить, что Secret создан
 kubectl get secret dev-cluster-secret -n argocd
-
-# Проверить статус кластера в Argo CD
-# Откройте https://argo.buildbyte.ru → Settings → Clusters
-# Должен отображаться кластер dev-cluster
 ```
 
-**Важно:** Подробная инструкция и диагностика в разделе "Добавление dev кластера в Argo CD".
+**Пункт 4: Проверить в Argo CD**
+
+1. Откройте https://argo.buildbyte.ru
+2. Авторизуйтесь через Keycloak
+3. Перейдите в **Settings** → **Clusters**
+4. Должен отображаться кластер `dev-cluster` со статусом "Connected"
+
+**Диагностика, если кластер не отображается:**
+
+```bash
+# Проверить Secret
+kubectl get secret dev-cluster-secret -n argocd -o yaml
+
+# Проверить логи Argo CD
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
+```
 
 #### 8.2. Создание AppProject для dev кластера
 
@@ -2264,318 +2268,6 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 
 # Проверить созданные namespaces
 kubectl get namespaces
-```
-
-### Добавление dev кластера в Argo CD
-
-Argo CD в services кластере должен быть настроен для управления приложениями в dev кластере.
-
-**Пункт 1: Получить данные dev кластера**
-
-```bash
-# Адрес API сервера dev кластера
-DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.server}')
-echo "Server: $DEV_CLUSTER_SERVER"
-
-# CA сертификат (base64)
-DEV_CA_DATA=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
-echo "CA Data: ${DEV_CA_DATA:0:50}..."
-
-# Токен (если есть в kubeconfig)
-DEV_TOKEN=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify -o jsonpath='{.users[].user.token}')
-echo "Token: ${DEV_TOKEN:0:20}..."
-```
-
-**Пункт 2: Заполнить manifest файл**
-
-Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
-- Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
-- Замените `<DEV_BEARER_TOKEN>` на токен
-- Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
-
-**Пункт 3: Применить Secret**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Применить Secret
-kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
-
-
-# Проверить, что Secret создан
-kubectl get secret dev-cluster-secret -n argocd
-```
-
-**Пункт 4: Проверить в Argo CD**
-
-1. Откройте https://argo.buildbyte.ru
-2. Авторизуйтесь через Keycloak
-3. Перейдите в **Settings** → **Clusters**
-4. Должен отображаться кластер `dev-cluster` со статусом "Connected"
-
-**Диагностика, если кластер не отображается:**
-
-```bash
-# Проверить Secret
-kubectl get secret dev-cluster-secret -n argocd -o yaml
-
-# Проверить логи Argo CD
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i cluster
-
-# Проверить доступность API сервера
-kubectl cluster-info
-
-# 4. Проверить формат kubeconfig
-# Убедитесь, что kubeconfig содержит все необходимые поля:
-kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten
-
-# 5. Пересоздать Secret с правильным форматом (если нужно)
-# Удалить существующий Secret
-kubectl delete secret dev-cluster-secret -n argocd
-
-# Создать Secret заново (см. шаг 2 выше)
-
-# 6. Проверить логи Argo CD для детальной информации об ошибке
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "dev-cluster\|unmarshal\|cluster secret"
-
-# 7. Альтернативный способ: создать Secret через kubectl create с правильным форматом
-# Если предыдущий способ не работает, попробуйте:
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-DEV_CLUSTER_SERVER=$(kubectl config view --kubeconfig=$HOME/kubeconfig-dev-cluster.yaml --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
-
-# Создать Secret напрямую через kubectl (без временных файлов)
-kubectl create secret generic dev-cluster-secret \
-  --from-literal=name=dev-cluster \
-  --from-literal=server="$DEV_CLUSTER_SERVER" \
-  --from-file=config=$HOME/kubeconfig-dev-cluster.yaml \
-  -n argocd \
-  --dry-run=client -o yaml | \
-  kubectl label --local -f - argocd.argoproj.io/secret-type=cluster -o yaml | \
-  kubectl apply -f -
-```
-
-**Типичные проблемы:**
-
-1. **Secret не содержит правильные ключи:**
-   - Убедитесь, что Secret содержит `name`, `server` и `config`
-   - `config` должен быть полным kubeconfig в формате YAML
-
-2. **Неправильный формат kubeconfig:**
-   - Убедитесь, что kubeconfig содержит `clusters`, `users`, `contexts`
-   - Проверьте, что все сертификаты и токены валидны
-
-3. **Argo CD не может подключиться к API серверу:**
-   - Проверьте сетевую доступность между кластерами
-   - Убедитесь, что API сервер dev кластера доступен из services кластера
-
-4. **Метка отсутствует:**
-   - Убедитесь, что Secret имеет метку `argocd.argoproj.io/secret-type: cluster`
-
-**Важно:**
-- Argo CD должен иметь доступ к API серверу dev кластера
-- Если кластеры находятся в разных сетях, убедитесь, что сетевые правила разрешают доступ
-- После добавления кластера может потребоваться несколько секунд для его появления в интерфейсе
-- После добавления кластера можно создавать Application в Argo CD, которые будут развертываться в dev кластер
-
-#### Добавление dev кластера в Argo CD через Vault Secrets Operator
-
-Альтернативный способ добавления dev кластера в Argo CD через Vault Secrets Operator, который синхронизирует kubeconfig из Vault.
-
-**Преимущества:**
-- Централизованное хранение kubeconfig в Vault
-- Автоматическая синхронизация при изменении kubeconfig
-- Управление через Git (VaultStaticSecret манифест)
-
-**Шаг 1: Подготовить kubeconfig для Argo CD**
-
-Argo CD ожидает упрощенный формат config с `bearerToken` и `tlsClientConfig`:
-
-```bash
-# Переключиться на dev кластер
-export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
-
-# Получить адрес API сервера
-DEV_CLUSTER_SERVER=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.server}')
-
-# Получить токен (если используется токен для аутентификации)
-# Для ServiceAccount токена:
-DEV_TOKEN=$(kubectl create token dashboard-user -n kube-system --duration=8760h)
-
-# Получить CA сертификат (base64)
-DEV_CA_DATA=$(kubectl config view --raw --minify --flatten -o jsonpath='{.clusters[].cluster.certificate-authority-data}')
-
-# Извлечь serverName из URL (убрать https:// и порт)
-DEV_SERVER_NAME=$(echo $DEV_CLUSTER_SERVER | sed 's|https://||' | sed 's|:.*||')
-
-# Создать config в формате JSON
-CONFIG_JSON=$(cat <<EOF | jq -c .
-{
-  "bearerToken": "$DEV_TOKEN",
-  "tlsClientConfig": {
-    "serverName": "$DEV_SERVER_NAME",
-    "caData": "$DEV_CA_DATA"
-  }
-}
-EOF
-)
-
-# Вывести config для проверки
-echo "Config JSON:"
-echo $CONFIG_JSON | jq .
-```
-
-**Шаг 2: Сохранить kubeconfig в Vault**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Установить переменные для работы с Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-
-# Убедиться, что KV v2 секретный движок включен
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-"
-
-# Сохранить kubeconfig в Vault
-# ВАЖНО: Замените <DEV_CLUSTER_SERVER>, <CONFIG_JSON> на реальные значения из шага 1
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/argocd/dev-cluster \
-  name='dev-cluster' \
-  server='<DEV_CLUSTER_SERVER>' \
-  config='<CONFIG_JSON>'
-"
-
-# Или сохранить через переменные окружения (более безопасно)
-# Сначала установите переменные из шага 1, затем:
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/argocd/dev-cluster \
-  name='dev-cluster' \
-  server='$DEV_CLUSTER_SERVER' \
-  config='$CONFIG_JSON'
-"
-
-# Проверить, что секрет сохранен правильно
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/argocd/dev-cluster
-"
-```
-
-**Шаг 3: Создать VaultStaticSecret манифест**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Создать VaultStaticSecret для синхронизации dev cluster credentials
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: dev-cluster-secret
-  namespace: argocd
-  labels:
-    app: argocd
-    component: cluster-config
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: argocd/dev-cluster
-  refreshAfter: 60s
-  destination:
-    name: dev-cluster
-    create: true
-    labels:
-      argocd.argoproj.io/secret-type: cluster
-EOF
-
-# Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret dev-cluster-secret -n argocd
-kubectl describe vaultstaticsecret dev-cluster-secret -n argocd
-
-# Проверить созданный Secret
-kubectl get secret dev-cluster -n argocd
-kubectl describe secret dev-cluster -n argocd
-
-# Проверить, что Secret содержит правильные ключи
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.config}' | base64 -d | jq .
-
-# Проверить метку
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.metadata.labels}' | jq .
-```
-
-**Шаг 5: Проверить статус кластера в Argo CD**
-
-```bash
-# Проверить логи Argo CD Application Controller
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i "dev-cluster\|cluster secret"
-
-# Проверить статус кластера в Argo CD через веб-интерфейс
-# Откройте https://argo.buildbyte.ru
-# Авторизуйтесь через Keycloak
-# Перейдите в Settings > Clusters
-# Должен отображаться кластер dev-cluster со статусом "Connected"
-```
-
-**Важно:**
-- VaultStaticSecret создает Secret с именем `dev-cluster` (указано в `destination.name`)
-- Secret автоматически получает метку `argocd.argoproj.io/secret-type: cluster` через `destination.labels`
-- Config должен быть в формате JSON строки (как в примере выше)
-- Токен должен иметь достаточные права для доступа к API серверу dev кластера
-- После обновления kubeconfig в Vault, VaultStaticSecret автоматически синхронизирует изменения (с интервалом `refreshAfter: 60s`)
-
-**Диагностика, если кластер не отображается:**
-
-```bash
-# 1. Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret dev-cluster-secret -n argocd
-kubectl describe vaultstaticsecret dev-cluster-secret -n argocd
-
-# Проверить события VaultStaticSecret
-kubectl get events -n argocd --field-selector involvedObject.name=dev-cluster-secret
-
-# 2. Проверить логи Vault Secrets Operator
-kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i "dev-cluster\|argocd"
-
-# 3. Проверить, что секрет существует в Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/argocd/dev-cluster
-"
-
-# 4. Проверить формат Secret
-kubectl get secret dev-cluster -n argocd -o yaml
-
-# Убедитесь, что Secret содержит:
-# - name: dev-cluster (в data)
-# - server: адрес API сервера dev кластера (в data)
-# - config: JSON строка с bearerToken и tlsClientConfig (в data)
-# - метка: argocd.argoproj.io/secret-type: cluster
-
-# 5. Проверить декодированные значения
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.name}' | base64 -d && echo
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.server}' | base64 -d && echo
-kubectl get secret dev-cluster -n argocd -o jsonpath='{.data.config}' | base64 -d | jq .
-
-# 6. Проверить логи Argo CD Application Controller
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "dev-cluster\|unmarshal\|cluster secret"
 ```
 
 ### Создание AppProject для организации Application
