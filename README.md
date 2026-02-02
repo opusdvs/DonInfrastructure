@@ -1360,23 +1360,8 @@ vault kv get secret/grafana/admin
 # Создать namespace для Prometheus Kube Stack (если еще не создан)
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
 
-# Создать VaultStaticSecret для синхронизации admin credentials из Vault
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-admin-credentials
-  namespace: kube-prometheus-stack
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: grafana/admin
-  refreshAfter: 60s
-  destination:
-    name: grafana-admin
-    create: true
-EOF
+# Применить VaultStaticSecret для admin credentials
+kubectl apply -f manifests/services/grafana/grafana-admin-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n kube-prometheus-stack
@@ -1386,11 +1371,65 @@ kubectl describe vaultstaticsecret grafana-admin-credentials -n kube-prometheus-
 kubectl get secret grafana-admin -n kube-prometheus-stack
 ```
 
-**Примечание:** Если секреты для Grafana уже сохранены в Vault в разделе 10.1, можно пропустить Шаг 1 и сразу перейти к Шагу 2.
+#### 13.2. Настройка OIDC для Grafana через Keycloak
 
-#### 13.2. Установка Prometheus Kube Stack
+**Важно:** OIDC секрет должен быть создан ДО установки Prometheus Kube Stack, чтобы Grafana сразу использовала OIDC аутентификацию.
 
-**Важно:** Убедитесь, что Loki развернут (см. раздел 13) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
+**Шаг 1: Создать клиент в Keycloak**
+
+1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
+2. Выберите Realm (например, `services`)
+3. Перейдите в **Clients** → **Create client**
+4. Настройте клиент:
+   - **Client ID:** `grafana`
+   - **Client protocol:** `openid-connect`
+   - **Access Type:** `confidential`
+   - **Valid Redirect URIs:** 
+     - `https://grafana.buildbyte.ru/login/generic_oauth`
+   - **Web Origins:** `https://grafana.buildbyte.ru`
+5. Сохраните клиент и перейдите на вкладку **Credentials**
+6. Скопируйте **Secret** (Client Secret)
+
+**Шаг 2: Сохранить Client Secret в Vault**
+
+```bash
+# Сохранить Client Secret для Grafana OIDC
+# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/grafana/oidc \
+  client_secret='<ВАШ_CLIENT_SECRET>'
+"
+
+# Проверить, что секрет сохранен правильно
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv get secret/grafana/oidc
+"
+```
+
+**Шаг 3: Создать VaultStaticSecret для синхронизации Client Secret**
+
+```bash
+# Применить VaultStaticSecret для OIDC credentials
+kubectl apply -f manifests/services/grafana/grafana-oidc-vaultstaticsecret.yaml
+
+# Проверить статус VaultStaticSecret
+kubectl get vaultstaticsecret -n kube-prometheus-stack
+kubectl describe vaultstaticsecret grafana-oidc-credentials -n kube-prometheus-stack
+
+# Проверить созданный Secret
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
+
+# Проверить значение Client Secret (должно быть реальное значение)
+kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
+```
+
+#### 13.3. Установка Prometheus Kube Stack
+
+**Важно:** Убедитесь, что Loki развернут (см. раздел 14) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
 
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
@@ -1416,9 +1455,8 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-- Secret `grafana-admin` должен быть создан через Vault Secrets Operator перед установкой
-- Admin credentials настроены в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` для использования существующего секрета
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании
+- Секреты `grafana-admin` и `grafana-oidc-secret` должны быть созданы через Vault Secrets Operator перед установкой
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 14), так как Loki настроен как источник данных в Grafana через `additionalDataSources`
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -1429,122 +1467,6 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.admin-password}' | base64 -d && echo
 ```
 
-#### 13.3. Настройка OIDC для Grafana через Keycloak
-
-**Важно:** Перед настройкой OIDC убедитесь, что:
-- Keycloak установлен и доступен по адресу `https://keycloak.buildbyte.ru`
-- В Keycloak создан клиент `grafana` с правильными redirect URIs
-- Получен Client Secret для клиента `grafana`
-
-**Шаг 1: Создать клиент в Keycloak**
-
-1. Войдите в Keycloak Admin Console: `https://keycloak.buildbyte.ru/admin`
-2. Выберите Realm (например, `services`)
-3. Перейдите в **Clients** → **Create client**
-4. Настройте клиент:
-   - **Client ID:** `grafana`
-   - **Client protocol:** `openid-connect`
-   - **Access Type:** `confidential`
-   - **Valid Redirect URIs:** 
-     - `https://grafana.buildbyte.ru/login/generic_oauth`
-   - **Web Origins:** `https://grafana.buildbyte.ru`
-5. Сохраните клиент и перейдите на вкладку **Credentials**
-6. Скопируйте **Secret** (Client Secret)
-
-**Шаг 2: Сохранить Client Secret в Vault**
-
-```bash
-# Установить переменные для работы с Vault
-export VAULT_ADDR="http://127.0.0.1:8200"
-export VAULT_TOKEN=$(cat /tmp/vault-root-token.txt)
-
-# Убедиться, что KV v2 секретный движок включен
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault secrets enable -version=2 -path=secret kv 2>&1 || echo 'Секретный движок уже включен'
-"
-
-# Сохранить Client Secret для Grafana OIDC
-# Замените <ВАШ_CLIENT_SECRET> на реальный Client Secret из Keycloak
-# ВАЖНО: Используйте нижнее подчеркивание в ключе (client_secret), а не дефис
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv put secret/grafana/oidc \
-  client_secret='<ВАШ_CLIENT_SECRET>'
-"
-
-# Проверить, что секрет сохранен правильно
-kubectl exec -it vault-0 -n vault -- sh -c "
-export VAULT_ADDR='http://127.0.0.1:8200'
-export VAULT_TOKEN='$VAULT_TOKEN'
-vault kv get secret/grafana/oidc
-"
-```
-
-**Шаг 3: Создать VaultStaticSecret для синхронизации Client Secret**
-
-VaultStaticSecret синхронизирует Client Secret из Vault в секрет `grafana-oidc-secret`, который используется Grafana для OIDC аутентификации через переменную окружения.
-
-```bash
-# Создать VaultStaticSecret для синхронизации OIDC client-secret для Grafana
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultStaticSecret
-metadata:
-  name: grafana-oidc-secret
-  namespace: kube-prometheus-stack
-spec:
-  vaultAuthRef: vault-secrets-operator/default
-  mount: secret
-  type: kv-v2
-  path: grafana/oidc
-  refreshAfter: 60s
-  destination:
-    name: grafana-oidc-secret
-    create: true
-EOF
-
-# Проверить статус VaultStaticSecret
-kubectl get vaultstaticsecret grafana-oidc-secret -n kube-prometheus-stack
-kubectl describe vaultstaticsecret grafana-oidc-secret -n kube-prometheus-stack
-
-# Проверить созданный Secret
-kubectl get secret grafana-oidc-secret -n kube-prometheus-stack
-
-# Проверить значение Client Secret (должно быть реальное значение)
-kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.data.client_secret}' | base64 -d && echo
-
-# Если синхронизация не прошла, проверьте логи Vault Secrets Operator:
-kubectl logs -n vault-secrets-operator -l app.kubernetes.io/name=vault-secrets-operator --tail=50 | grep -i grafana
-```
-
-**Важно:**
-- VaultStaticSecret создает секрет `grafana-oidc-secret` с ключом `client_secret`
-- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml` через `envValueFrom`)
-- OIDC конфигурация уже настроена в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
-- Если синхронизация не прошла, проверьте:
-  - Существует ли секрет в Vault по пути `secret/grafana/oidc` с ключом `client_secret`
-  - Настроен ли VaultAuth для Vault Secrets Operator
-  - Работает ли Vault Secrets Operator
-
-**Шаг 4: Перезапустить Grafana (если необходимо)**
-
-После создания секрета Grafana автоматически использует его для OIDC. Если OIDC не работает, перезапустите Grafana:
-
-```bash
-# Перезапустить Grafana
-kubectl rollout restart deployment kube-prometheus-stack-grafana -n kube-prometheus-stack
-
-# Проверить логи Grafana для подтверждения OIDC конфигурации
-kubectl logs -f deployment/kube-prometheus-stack-grafana -n kube-prometheus-stack | grep -i oauth
-
-# Проверить, что переменная окружения установлена в поде Grafana
-GRAFANA_POD=$(kubectl get pods -n kube-prometheus-stack -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
-kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
-```
-
 **Проверка OIDC:**
 
 1. Откройте Grafana: `https://grafana.buildbyte.ru`
@@ -1552,15 +1474,10 @@ kubectl exec $GRAFANA_POD -n kube-prometheus-stack -- env | grep GF_AUTH_GENERIC
 3. Выполните вход через Keycloak
 4. Проверьте, что пользователь успешно аутентифицирован
 
-**Важно:**
-- OIDC конфигурация использует Realm `services` по умолчанию (настроено в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`)
-- Client Secret синхронизируется из Vault через Vault Secrets Operator в секрет `grafana-oidc-secret` с ключом `client_secret`
-- Секрет используется через переменную окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET`, которая устанавливается через `envValueFrom` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`
-- Grafana автоматически читает переменные окружения с префиксом `GF_` для конфигурации
-- Роли настраиваются на основе групп из Keycloak через `role_attribute_path`:
-  - Группа `GrafanaAdmins` получает роль `Admin`
-  - Группа `GrafanaEditors` получает роль `Editor`
-  - Остальные пользователи получают роль `Viewer`
+**Примечание:** Роли настраиваются на основе групп из Keycloak:
+- Группа `GrafanaAdmins` получает роль `Admin`
+- Группа `GrafanaEditors` получает роль `Editor`
+- Остальные пользователи получают роль `Viewer`
 
 ### 14. Установка Loki (централизованное хранение логов)
 
@@ -1570,7 +1487,7 @@ Loki разворачивается в services кластере и исполь
 - **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 14), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
 - Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 15) и перед настройкой Fluent Bit в dev кластере, так как Fluent Bit будет отправлять логи в Loki.
 
-#### 13.1. Установка Loki через Helm
+#### 14.1. Установка Loki через Helm
 
 Loki устанавливается через Helm chart в services кластере:
 
@@ -1606,7 +1523,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=loki -n logging
 - Период хранения логов: 720 часов (30 дней) по умолчанию
 - Chart версия: `6.21.0` (указана в `helm/services/loki/loki-values.yaml` или можно указать через `--version`)
 
-#### 13.2. Получение внешнего IP адреса LoadBalancer Service
+#### 14.2. Получение внешнего IP адреса LoadBalancer Service
 
 После установки Loki через Helm chart автоматически создается LoadBalancer Service для gateway. Получите внешний IP адрес:
 
@@ -1629,7 +1546,7 @@ echo "Loki доступен по адресу: $LOKI_EXTERNAL_IP:3100"
 - Убедитесь, что firewall разрешает подключения к порту 3100 с IP адресов dev кластера
 - Для production рекомендуется использовать VPN или приватную сеть вместо публичного LoadBalancer
 
-#### 13.3. Проверка доступности Loki
+#### 14.3. Проверка доступности Loki
 
 ```bash
 # Переключиться на services кластер
@@ -1661,7 +1578,7 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 - Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
 - Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
 
-#### 14.1. Установка Fluent Bit через Helm
+#### 15.1. Установка Fluent Bit через Helm
 
 ```bash
 # Переключиться на services кластер
@@ -1688,7 +1605,7 @@ kubectl get daemonset -n logging fluent-bit
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=fluent-bit -n logging --timeout=300s
 ```
 
-#### 14.2. Проверка установки Fluent Bit
+#### 15.2. Проверка установки Fluent Bit
 
 ```bash
 # Переключиться на services кластер
