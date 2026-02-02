@@ -2071,52 +2071,29 @@ vault read auth/kubernetes-dev/role/vault-secrets-operator
 
 #### 7.4. Создание VaultConnection и VaultAuth для подключения к внешнему Vault
 
-Создайте VaultConnection и VaultAuth для подключения к Vault в services кластере:
+VaultConnection и VaultAuth с именем `default` уже созданы при установке Vault Secrets Operator. Нужно обновить их для подключения к Vault в services кластере.
 
 ```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Создать VaultConnection для подключения к внешнему Vault
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultConnection
-metadata:
-  name: vault-connection
-  namespace: vault-secrets-operator
-spec:
-  address: https://vault.buildbyte.ru
-  skipTLSVerify: false
-EOF
+# Применить VaultConnection
+kubectl apply -f manifests/dev/vault-secrets-operator/vault-connection.yaml
 
-# Создать VaultAuth для аутентификации в Vault
-cat <<EOF | kubectl apply -f -
-apiVersion: secrets.hashicorp.com/v1beta1
-kind: VaultAuth
-metadata:
-  name: vault-auth
-  namespace: vault-secrets-operator
-spec:
-  vaultConnectionRef: vault-connection
-  method: kubernetes
-  mount: kubernetes-dev
-  kubernetes:
-    role: vault-secrets-operator
-    serviceAccount: default
-EOF
+# Применить VaultAuth
+kubectl apply -f manifests/dev/vault-secrets-operator/vault-auth.yaml
 
 # Проверить VaultConnection и VaultAuth
 kubectl get vaultconnection -n vault-secrets-operator
 kubectl get vaultauth -n vault-secrets-operator
-kubectl describe vaultauth vault-auth -n vault-secrets-operator
+kubectl describe vaultauth default -n vault-secrets-operator
 ```
 
 **Важно:** 
+- VaultConnection и VaultAuth используют имя `default` — это стандартное имя, на которое ссылаются VaultStaticSecret
 - Адрес Vault: `https://vault.buildbyte.ru` (через HTTPRoute в services кластере)
-- Убедитесь, что DNS запись для `vault.buildbyte.ru` настроена и указывает на Gateway
-- Убедитесь, что TLS сертификат для `vault.buildbyte.ru` создан через cert-manager
-- HTTPRoute `vault-server` должен быть применен в services кластере
 - Auth method mount: `kubernetes-dev` (отдельный от services кластера)
+- VaultStaticSecret ссылаются на VaultAuth через `vaultAuthRef: vault-secrets-operator/default`
 
 ### Шаг 8: Установка Fluent Bit (сбор логов) в dev кластере
 
