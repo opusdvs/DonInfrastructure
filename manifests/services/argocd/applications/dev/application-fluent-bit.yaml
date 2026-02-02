@@ -21,7 +21,7 @@ spec:
     # Values source (this repository)
     - repoURL: https://github.com/opusdvs/DonInfrastructure.git
       targetRevision: main
-      ref: helm/dev/fluent-bit/fluent-bit-values.yaml
+      ref: values
 
   destination:
     name: dev-cluster

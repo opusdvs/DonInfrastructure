@@ -2104,31 +2104,48 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 - Fluent Bit настроен для отправки логов в Loki через HTTP API
 - Необходимо обновить конфигурацию Fluent Bit с внешним IP адресом Loki перед установкой
 
-#### 8.1. Настройка Fluent Bit для отправки логов в Loki
+#### 8.1. Создание AppProject для dev кластера в Argo CD
 
-Перед установкой Fluent Bit необходимо обновить конфигурацию с внешним IP адресом Loki:
+Перед развертыванием Fluent Bit через Argo CD необходимо создать AppProject:
+
+```bash
+# Переключиться на services кластер
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Применить AppProject для инфраструктурных сервисов dev кластера
+kubectl apply -f manifests/services/argocd/appprojects/dev-infrastructure-project.yaml
+
+# Проверить, что AppProject создан
+kubectl get appproject dev-infrastructure -n argocd
+kubectl describe appproject dev-infrastructure -n argocd
+```
+
+**Важно:** AppProject `dev-infrastructure` должен быть создан до применения Application.
+
+#### 8.2. Настройка Fluent Bit для отправки логов в Loki
+
+Перед установкой Fluent Bit проверьте, что IP адрес Loki указан правильно в конфигурации:
 
 ```bash
 # 1. Переключиться на services кластер и получить внешний IP адрес Loki
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-LOKI_EXTERNAL_IP=$(kubectl get svc loki-external -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 echo "Внешний IP адрес Loki: $LOKI_EXTERNAL_IP"
 
-# 2. Обновить конфигурацию Fluent Bit с IP адресом Loki
-# Заменить <LOKI_EXTERNAL_IP> на реальный IP адрес в файле helm/dev/fluent-bit/fluent-bit-values.yaml
-# Или использовать sed для автоматической замены:
-sed -i "s/<LOKI_EXTERNAL_IP>/$LOKI_EXTERNAL_IP/g" helm/dev/fluent-bit/fluent-bit-values.yaml
+# 2. Проверить текущий IP адрес в конфигурации Fluent Bit
+grep "Host" helm/dev/fluent-bit/fluent-bit-values.yaml | grep -v "#"
 
-# 3. Проверить, что IP адрес заменен
-grep -A 2 "Host.*$LOKI_EXTERNAL_IP" helm/dev/fluent-bit/fluent-bit-values.yaml
+# 3. Если IP адрес отличается, обновить вручную в файле:
+# helm/dev/fluent-bit/fluent-bit-values.yaml
+# Найти секцию [OUTPUT] и заменить Host на актуальный IP адрес Loki
 ```
 
 **Важно:**
-- Замените `<LOKI_EXTERNAL_IP>` на реальный внешний IP адрес LoadBalancer Service `loki-gateway` из services кластера
+- IP адрес Loki указывается в секции `config.outputs` файла `helm/dev/fluent-bit/fluent-bit-values.yaml`
 - IP адрес можно получить командой: `kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
 - Если LoadBalancer еще не получил IP адрес, дождитесь его назначения перед настройкой Fluent Bit
 
-#### 8.2. Развертывание Fluent Bit через Argo CD Application
+#### 8.3. Развертывание Fluent Bit через Argo CD Application
 
 Fluent Bit разворачивается через Argo CD Application в services кластере:
 
@@ -2147,7 +2164,7 @@ kubectl describe application fluent-bit-dev -n argocd
 kubectl wait --for=condition=Synced application fluent-bit-dev -n argocd --timeout=300s
 ```
 
-#### 8.3. Проверка установки Fluent Bit
+#### 8.4. Проверка установки Fluent Bit
 
 ```bash
 # Переключиться на dev кластер

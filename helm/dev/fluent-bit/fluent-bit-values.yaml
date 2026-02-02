@@ -424,7 +424,7 @@ config:
     [OUTPUT]
         Name loki
         Match kube.*
-        Host 212.60.21.20
+        Host 188.225.87.254
         Port 3100
         Labels job=fluentbit
         Label_keys $kubernetes['namespace_name'],$kubernetes['pod_name'],$kubernetes['container_name']
@@ -433,7 +433,7 @@ config:
     [OUTPUT]
         Name loki
         Match host.*
-        Host 212.60.21.20
+        Host 188.225.87.254
         Port 3100
         Labels job=fluentbit,source=systemd
 
