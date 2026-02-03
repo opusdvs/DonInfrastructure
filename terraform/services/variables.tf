@@ -36,7 +36,7 @@ variable "node_group_name" {
 variable "node_group_node_count" {
   type        = number
   description = "Node group node count"
-  default     = 5
+  default     = 6
 }
 
 variable "home_dir" {
