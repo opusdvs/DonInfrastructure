@@ -234,42 +234,11 @@ kubectl version --short
 **Важно:** 
 - Для Timeweb Container Registry используется **API Token** вместо пароля
 - Эти credentials будут использоваться для настройки Jenkins и доступа к приватным Docker образам из CI/CD пайплайнов
-- API Token сохраняется в Vault в поле `password` (см. инструкцию в разделе 12.1)
+- API Token сохраняется в Vault в поле `password`
 
-**Конфигурация Services кластера по умолчанию:**
-- **Регион:** `ru-1` (можно изменить в `terraform/services/variables.tf`)
-- **Проект:** `services` (можно изменить в `terraform/services/variables.tf`)
-- **Версия Kubernetes:** `v1.34.3+k0s.0` (можно изменить в `terraform/services/variables.tf`)
-- **Сетевой драйвер:** `calico` (можно изменить в `terraform/services/variables.tf`)
-- **Мастер нода:** 4 CPU (настроено в `terraform/services/data.tf`)
-- **Воркер ноды:** 2 CPU, количество узлов: 3 (настраивается в `terraform/services/variables.tf`)
-- **Группы нод:** 2 группы воркеров (настроено в `terraform/services/main.tf`)
+Переменные кластеров задаются в `terraform/services/variables.tf` и `terraform/dev/variables.tf`. Управление: `terraform show`, `terraform output`, `terraform destroy`.
 
-**Конфигурация Dev кластера по умолчанию:**
-- **Регион:** `ru-1` (можно изменить в `terraform/dev/variables.tf`)
-- **Проект:** `dev` (можно изменить в `terraform/dev/variables.tf`)
-- **Версия Kubernetes:** `v1.34.3+k0s.0` (можно изменить в `terraform/dev/variables.tf`)
-- **Сетевой драйвер:** `calico` (можно изменить в `terraform/dev/variables.tf`)
-- **Мастер нода:** 4 CPU (настроено в `terraform/dev/data.tf`)
-- **Воркер ноды:** 2 CPU, количество узлов: 2 (настраивается в `terraform/dev/variables.tf`)
-- **Группы нод:** 2 группы воркеров (настроено в `terraform/dev/main.tf`)
-
-**Управление кластером:**
-
-```bash
-# Просмотр информации о кластере
-terraform show
-
-# Просмотр outputs
-terraform output
-
-# Удаление кластера (осторожно!)
-terraform destroy
-```
-
-## Развертывание Services кластера (инфраструктурные компоненты)
-
-Следующие шаги относятся к развертыванию инфраструктурных компонентов на Services кластере.
+## Развертывание Services кластера
 
 ### 2. Установка Gateway API с NGINX Gateway Fabric
 
@@ -283,9 +252,7 @@ kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gat
 # 3. Установить контроллер NGINX Gateway Fabric
 kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/default/deploy.yaml
 
-# 4. Проверить установку
-kubectl get pods -n nginx-gateway
-kubectl get gatewayclass
+kubectl get pods -n nginx-gateway && kubectl get gatewayclass
 ```
 
 ### 3. Установка cert-manager
@@ -301,12 +268,10 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --create-namespace \
   -f helm/services/cert-managar/cert-manager-values.yaml
 
-# 3. Проверить установку
 kubectl get pods -n cert-manager
-kubectl get crd | grep cert-manager
 ```
 
-**Важно:** Флаг `config.enableGatewayAPI: true` (в `helm/services/cert-managar/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+Нужен `config.enableGatewayAPI: true` в values.
 
 ### 4. Создание ClusterIssuer
 
@@ -314,84 +279,33 @@ kubectl get crd | grep cert-manager
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
 kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
 
-# 2. Проверить ClusterIssuer
 kubectl get clusterissuer
-kubectl describe clusterissuer letsencrypt-prod
 ```
 
-**Важно:** 
-- Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/services/cert-manager/cluster-issuer.yaml`
-- ClusterIssuer создаётся ДО Gateway
+Замените email в `manifests/services/cert-manager/cluster-issuer.yaml`.
 
 ### 5. Создание Gateway
 
-**Важно:** Для получения сертификатов через HTTP-01 challenge необходимо сначала создать HTTP redirect routes. cert-manager создаст временные HTTPRoute для `/.well-known/acme-challenge/`, которые будут иметь приоритет над redirect routes.
+Сначала применить HTTP redirect routes (нужны для HTTP-01 challenge), затем Gateway.
 
 ```bash
-# 1. Создать namespace'ы для сервисов (если ещё не созданы)
-kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
-kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
-
-# 2. Применить HTTP redirect routes (нужны для HTTP-01 challenge)
+for ns in keycloak argocd jenkins kube-prometheus-stack vault; do kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -; done
 kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
 kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
 kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
 kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
 kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
-
-# 3. Применить Gateway с HTTPS listeners
 kubectl apply -f manifests/services/gateway/gateway.yaml
-
-# 4. Проверить статус Gateway
-kubectl get gateway -n default
-kubectl describe gateway service-gateway -n default
-
-# 5. Проверить автоматически созданные сертификаты (появятся через 1-2 минуты)
-kubectl get certificate -n default
-
-# 6. Дождаться готовности сертификатов
 kubectl get certificate -n default -w
 ```
 
-**Примечание:** 
-- Gateway содержит аннотацию `cert-manager.io/cluster-issuer: letsencrypt-prod`
-- cert-manager автоматически создаёт Certificate для каждого HTTPS listener
-- Сертификаты выпускаются через HTTP-01 challenge (требуется HTTP listener и HTTPRoute)
-- HTTP redirect routes позволяют cert-manager обрабатывать ACME challenge запросы
+### 6. Установка CSI драйвера (Timeweb Cloud)
 
-### 6. Установка CSI драйвера в панели Timeweb Cloud
-
-CSI драйвер для сетевых дисков Timeweb Cloud устанавливается через Helm chart:
-
-```bash
-# 1. Добавить Helm репозиторий (если еще не добавлен)
-helm repo add <timeweb-helm-repo> <repo-url>
-helm repo update
-
-# 2. Установить CSI драйвер
-helm upgrade --install csi-driver-timeweb-cloud <chart-name> \
-  --namespace kube-system \
-  -f helm/services/csi-tw/csi-tw-values.yaml
-
-# 3. Проверить установку
-kubectl get pods -n kube-system | grep csi-driver-timeweb-cloud
-kubectl get storageclass | grep network-drives
-```
-
-**Важно:** 
-- Перед установкой заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в файле `helm/services/csi-tw/csi-tw-values.yaml`
-- Убедитесь, что API ключ имеет права на управление сетевыми дисками
-
-**Примечание:** Установка через панель Timeweb Cloud может отличаться. Следуйте инструкциям в документации Timeweb Cloud для установки CSI драйвера через веб-интерфейс.
+Заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в `helm/services/csi-tw/csi-tw-values.yaml`. Установка через Helm или панель Timeweb Cloud.
 
 ### 7. Установка Vault через Helm
 
-**Важно:** Vault должен быть установлен одним из первых, так как он используется для хранения секретов, которые будут синхронизироваться через Vault Secrets Operator.
-
-Vault устанавливается через официальный Helm chart от HashiCorp.
+Vault ставится одним из первых (секреты для Vault Secrets Operator).
 
 #### 7.1. Установка Vault
 
@@ -641,7 +555,7 @@ EOF
 
 **Важно:**
 - **Vault должен быть разблокирован (unsealed)** перед использованием VaultAuth
-- Kubernetes auth в Vault должен быть настроен перед использованием VaultAuth (см. раздел 8.1)
+- Kubernetes auth в Vault должен быть настроен перед использованием VaultAuth
 - Роль `vault-secrets-operator` в Vault должна иметь доступ к путям секретов, которые будут использоваться
 - Default VaultConnection использует адрес `http://vault.vault.svc.cluster.local:8200`
 - Default VaultAuth разрешает использование из всех namespace (`allowedNamespaces: ["*"]`)
@@ -938,7 +852,7 @@ kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600
 
 #### 10.4. Создание HTTPRoute для Keycloak
 
-**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 5).
+**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway.
 
 ```bash
 # 1. Проверить, что сертификат готов
@@ -1210,7 +1124,7 @@ kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
 kubectl get httproute -n argocd
 ```
 
-**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway (раздел 5).
+**Важно:** HTTPRoute создаётся после готовности сертификатов. Сертификаты создаются автоматически при применении Gateway.
 
 **Проверка:**
 ```bash
@@ -1443,8 +1357,8 @@ Pipeline определены в `helm/services/jenkins/jenkins-values.yaml` в 
 Loki разворачивается в services кластере и используется для централизованного хранения логов из dev кластера через Fluent Bit.
 
 **Важно:** 
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (раздел 15), так как Loki настроен как источник данных в Grafana через `additionalDataSources`. Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен при первом развертывании.
-- Loki должен быть развернут перед установкой Fluent Bit в services кластере (раздел 14) и перед настройкой Fluent Bit в dev кластере, так как Fluent Bit будет отправлять логи в Loki.
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** — источник данных в Grafana через `additionalDataSources`.
+- Loki развернуть перед Fluent Bit в services и в dev кластере.
 
 #### 13.1. Установка Loki через Helm
 
@@ -1531,7 +1445,7 @@ curl http://$LOKI_EXTERNAL_IP:3100/metrics | head -20
 Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла services кластера, отправляя их в Loki.
 
 **Важно:**
-- Loki должен быть развернут перед установкой Fluent Bit (см. раздел 13)
+- Loki должен быть развернут перед установкой Fluent Bit
 - Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
 - Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
 
@@ -1595,7 +1509,7 @@ kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|er
 
 **Важно:** 
 - Перед установкой Prometheus Kube Stack необходимо создать секрет с паролем администратора Grafana через Vault Secrets Operator.
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana (`additionalDataSources` в `helm/services/prom-kube-stack/prom-kube-stack-values.yaml`). Если Prometheus Kube Stack развернется раньше Loki, источник данных Loki не будет автоматически настроен.
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** — Loki настроен как источник данных в Grafana (`additionalDataSources`).
 
 #### 15.1. Создание секрета в Vault и VaultStaticSecret для Grafana admin credentials
 
@@ -1708,7 +1622,7 @@ kubectl get secret grafana-oidc-secret -n kube-prometheus-stack -o jsonpath='{.d
 
 #### 15.3. Установка Prometheus Kube Stack
 
-**Важно:** Убедитесь, что Loki развернут (см. раздел 13) перед установкой Prometheus Kube Stack, так как Loki настроен как источник данных в Grafana.
+**Важно:** Loki развернуть перед установкой Prometheus Kube Stack (источник данных в Grafana).
 
 ```bash
 # 1. Добавить Helm репозиторий Prometheus Community
@@ -1735,7 +1649,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n k
 **Важно:**
 - Prometheus и Grafana используют StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
 - Секреты `grafana-admin` и `grafana-oidc-secret` должны быть созданы через Vault Secrets Operator перед установкой
-- **Loki должен быть развернут ДО установки Prometheus Kube Stack** (см. раздел 13), так как Loki настроен как источник данных в Grafana через `additionalDataSources`
+- **Loki должен быть развернут ДО установки Prometheus Kube Stack** — источник данных в Grafana через `additionalDataSources`
 
 **Получение пароля администратора Grafana:**
 ```bash
@@ -1775,27 +1689,14 @@ kubectl get httproute -n kube-prometheus-stack
 
 ## Развертывание и настройка Dev кластера
 
-Пошаговая инструкция по развертыванию и настройке dev кластера для разработки и развертывания микросервисов.
+Развертывание и настройка dev кластера.
 
 **Важно:** Dev кластер должен быть развернут после настройки Services кластера, так как он использует Vault из Services кластера для хранения секретов.
 
 **GitOps (Argo CD):** развертка базовых компонентов dev кластера (**cert-manager**, **vault-secrets-operator**, **fluent-bit**) выполняется через Argo CD `Application` в services кластере.
 
 **Порядок выполнения шагов:**
-1. Шаг 1: Развертывание кластера через Terraform
-2. Шаг 2: Установка CSI драйвера Timeweb Cloud
-3. Шаг 3: Установка Gateway API с NGINX Gateway Fabric
-4. Шаг 4: Настройка Argo CD для управления dev кластером
-5. Шаг 5: Установка cert-manager через Argo CD
-6. Шаг 6: Создание ClusterIssuer
-7. Шаг 7: Создание Gateway
-8. Шаг 8: Установка Vault Secrets Operator через Argo CD
-9. Шаг 9: Установка Fluent Bit через Argo CD
-10. Шаг 10: Создание базовых Namespaces
-11. Шаг 11: Создание AppProject dev-microservices
-12. Шаг 12: Создание Argo CD Application для микросервисов
-
-**Важно:** Перед применением Application необходимо создать AppProject для организации Application:
+Шаги: 1–4 (Terraform, CSI, Gateway API, Argo CD), 5–7 (cert-manager, ClusterIssuer, Gateway), 8 (VSO), 9 (Fluent Bit), 10 (Namespaces), 11 (AppProject).
 
 ```bash
 # Переключиться на services кластер
@@ -1817,7 +1718,6 @@ kubectl apply -f manifests/services/argocd/applications/dev/
 - `manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml`
 - `manifests/services/argocd/applications/dev/application-fluent-bit.yaml`
 
-Подробнее о AppProject см. раздел "Создание AppProject для организации Application".
 
 ### Шаг 1: Развертывание кластера через Terraform
 
@@ -1853,7 +1753,7 @@ kubectl get pods -A
 kubectl version --short
 ```
 
-### Шаг 2: Установка CSI драйвера Timeweb Cloud
+### 2. CSI драйвер Timeweb Cloud
 
 CSI драйвер необходим для работы с Persistent Volumes (сетевыми дисками):
 
@@ -1869,7 +1769,6 @@ terraform show | grep -i "id.*=" | head -1
 #    - Указать TW_CLUSTER_ID (ID dev кластера, будет отличаться от services кластера)
 
 # 3. Установить CSI драйвер
-# Примечание: Проверьте актуальный способ установки в документации Timeweb Cloud
 # Возможно, установка выполняется через панель управления, а не через Helm
 
 # Если установка через Helm доступна:
@@ -1887,11 +1786,8 @@ kubectl get storageclass
 **Важно:** 
 - Убедитесь, что API ключ имеет права на управление сетевыми дисками
 - Cluster ID для dev кластера будет отличаться от services кластера
-- Проверьте актуальную документацию Timeweb Cloud для установки CSI драйвера
 
-### Шаг 3: Установка Gateway API с NGINX Gateway Fabric
-
-Gateway API необходим для управления ingress трафиком:
+### 3. Gateway API с NGINX Gateway Fabric
 
 ```bash
 # 1. Установить CRDs Gateway API (стандартная версия)
@@ -1911,7 +1807,7 @@ kubectl get gatewayclass
 kubectl wait --for=condition=ready pod -l app=nginx-gateway-fabric -n nginx-gateway --timeout=300s
 ```
 
-### Шаг 4: Настройка Argo CD для управления dev кластером
+### 4. Argo CD для управления dev кластером
 
 Для развертывания приложений в dev кластере через Argo CD необходимо добавить dev кластер и создать AppProject.
 
@@ -1994,7 +1890,7 @@ kubectl describe appproject dev-microservices -n argocd
 - `dev-infrastructure` — для инфраструктурных сервисов (cert-manager, vault-secrets-operator, fluent-bit)
 - `dev-microservices` — для микросервисов (donweather и другие приложения)
 
-### Шаг 5: Установка cert-manager через Argo CD
+### 5. cert-manager через Argo CD
 
 cert-manager необходим для автоматического управления TLS сертификатами через Let's Encrypt.
 
@@ -2034,7 +1930,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manage
 **Важно:** 
 - Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
-### Шаг 6: Создание ClusterIssuer
+### 6. ClusterIssuer
 
 ```bash
 # Переключиться на dev кластер
@@ -2050,7 +1946,7 @@ kubectl describe clusterissuer letsencrypt-prod
 
 **Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/dev/cert-manager/cluster-issuer.yaml`
 
-### Шаг 7: Создание Gateway
+### 7. Gateway
 
 После установки cert-manager и ClusterIssuer создайте Gateway. cert-manager автоматически создаст сертификаты для каждого HTTPS listener благодаря аннотации `cert-manager.io/cluster-issuer`.
 
@@ -2087,7 +1983,7 @@ kubectl get certificate -n default -w
 | donweather.dev.buildbyte.ru | donweather-tls-cert |
 | api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
 
-### Шаг 8: Установка и настройка Vault Secrets Operator для работы с внешним Vault
+### 8. Vault Secrets Operator (внешний Vault)
 
 Vault Secrets Operator будет подключаться к Vault, который находится в services кластере.
 
@@ -2349,14 +2245,14 @@ kubectl describe vaultauth default -n vault-secrets-operator
 - Auth method mount: `kubernetes-dev` (отдельный от services кластера)
 - VaultStaticSecret ссылаются на VaultAuth через `vaultAuthRef: vault-secrets-operator/default`
 
-### Шаг 9: Установка Fluent Bit (сбор логов) в dev кластере
+### 9. Fluent Bit в dev кластере
 
 Fluent Bit разворачивается как DaemonSet и собирает логи контейнеров с каждого узла dev кластера, отправляя их в Loki, который развернут в services кластере.
 
 **Важно:**
-- Перед установкой Fluent Bit убедитесь, что Loki развернут в services кластере и LoadBalancer Service `loki-gateway` получил внешний IP адрес (см. раздел 13)
+- Перед установкой Fluent Bit: Loki развернут в services кластере, LoadBalancer `loki-gateway` имеет внешний IP
 - Fluent Bit настроен для отправки логов в Loki через HTTP API
-- AppProject `dev-infrastructure` должен быть создан (см. Шаг 4)
+- AppProject `dev-infrastructure` должен быть создан
 
 #### 9.1. Настройка Fluent Bit для отправки логов в Loki
 
@@ -2429,7 +2325,7 @@ kubectl logs -n logging -l app.kubernetes.io/name=fluent-bit | grep -i "loki\|er
   - Доступность Loki из dev кластера: `curl http://<LOKI_EXTERNAL_IP>:3100/ready`
   - Firewall правила для порта 3100
 
-### Шаг 10: Создание базовых Namespaces
+### 10. Базовые Namespaces
 
 Namespaces для сервисов будут создаваться вручную позже в зависимости от названий сервисов.
 
@@ -2444,9 +2340,9 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 kubectl get namespaces
 ```
 
-### Шаг 10.1: Создание Docker registry secret для микросервисов в dev кластере (Vault + VaultStaticSecret)
+### 10.1. Docker registry secret (Vault + VaultStaticSecret)
 
-Чтобы поды микросервисов в dev кластере могли тянуть образы из приватного Docker Registry, секрет создаётся через Vault и VaultStaticSecret. Данные те же, что и для Jenkins (раздел 12.1): URL реестра, username и API Token (например, `buildbyte-container-registry.registry.twcstorage.ru`).
+Чтобы поды в dev кластере тянули образы из приватного Docker Registry, секрет создаётся через Vault и VaultStaticSecret. Данные: URL реестра, username и API Token (как для Jenkins).
 
 **Предварительные условия:** Vault в services кластере доступен из dev кластера, Vault Secrets Operator в dev кластере настроен (Шаг 8), политика Vault разрешает чтение `secret/data/dev/*` (политика `vault-secrets-operator-dev-policy` по умолчанию разрешает `secret/data/*`).
 
@@ -2530,7 +2426,7 @@ spec:
 - Секрет создаётся в том namespace, где задан VaultStaticSecret (в примере — `donweather`). Поды микросервисов должны быть в том же namespace или создайте отдельный VaultStaticSecret в каждом namespace.
 - Имя секрета `registry-docker-registry` должно совпадать с `imagePullSecrets[].name` в чарте или манифестах приложения.
 
-### Шаг 11: Создание AppProject dev-microservices для микросервисов
+### 11. AppProject dev-microservices
 
 AppProject `dev-microservices` используется для развертывания микросервисов в dev кластере.
 
@@ -2555,128 +2451,6 @@ kubectl describe appproject dev-microservices -n argocd
   - `microservices-admin` (группа `MicroservicesAdmins`) — полный доступ
   - `developer` (группа `Developers`) — синхронизация и просмотр
   - `operator` (группа `Operators`) — просмотр и синхронизация
-
-### Шаг 12: Создание Argo CD Application для развертывания приложений
-
-После добавления dev кластера в Argo CD и создания AppProject можно создавать Application для развертывания приложений в dev кластере.
-
-**Важно:** Перед созданием Application убедитесь, что:
-- Dev кластер добавлен в Argo CD и имеет статус "Connected"
-- AppProject созданы (`dev-infrastructure` и `dev-microservices`)
-- Git репозиторий с Helm chart приложения доступен
-- Docker Registry credentials настроены в dev кластере (если используются приватные образы)
-
-**Пример: Создание Application для donweather-ms-weather**
-
-Создайте файл `manifests/services/argocd/applications/donweather/application-ms-weather.yaml`:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: donweather-ms-weather-dev
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: dev-microservices
-  
-  source:
-    repoURL: https://github.com/opusdvs/DonWeather-ms-weather.git
-    targetRevision: dev
-    path: .helm/donweather-ms-weather
-    helm:
-      valueFiles:
-        - values.yaml
-      # Переопределение значений через параметры (опционально)
-      # values: |
-      #   replicaCount: 2
-      #   image:
-      #     repository: buildbyte-container-registry.registry.twcstorage.ru/donweather-ms-weather
-      #     tag: latest
-  
-  destination:
-    name: dev-cluster
-    namespace: donweather
-  
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-      allowEmpty: false
-    syncOptions:
-      - CreateNamespace=true
-      - PrunePropagationPolicy=foreground
-      - PruneLast=true
-    retry:
-      limit: 5
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m
-```
-
-**Применить Application:**
-
-```bash
-# Переключиться на services кластер
-export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
-
-# Создать директорию для Application (если еще не создана)
-mkdir -p manifests/services/argocd/applications/donweather
-
-# Применить Application
-kubectl apply -f manifests/services/argocd/applications/donweather/application-ms-weather.yaml
-
-# Проверить статус Application
-kubectl get application donweather-ms-weather-dev -n argocd
-kubectl describe application donweather-ms-weather-dev -n argocd
-
-# Проверить статус синхронизации
-kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.sync.status}' && echo
-kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.health.status}' && echo
-
-# Проверить логи синхронизации
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=50 | grep -i "donweather-ms-weather"
-```
-
-**Проверка Application в веб-интерфейсе Argo CD:**
-
-1. Откройте Argo CD: `https://argo.buildbyte.ru`
-2. Авторизуйтесь через Keycloak
-3. Перейдите в раздел **Applications**
-4. Должно отображаться приложение `donweather-ms-weather-dev`
-5. Проверьте статус синхронизации и health статус
-
-**Важно:**
-- `destination.name: dev-cluster` указывает на кластер, добавленный в Argo CD
-- `destination.namespace: donweather` - namespace в dev кластере, где будет развернуто приложение
-- `syncPolicy.automated` включает автоматическую синхронизацию при изменениях в Git
-- `syncOptions: CreateNamespace=true` автоматически создает namespace, если он не существует
-- Если приложение использует приватные Docker образы, убедитесь, что Docker Registry credentials настроены в namespace `donweather` (см. раздел 12.6)
-
-**Диагностика, если Application не синхронизируется:**
-
-```bash
-# 1. Проверить статус Application
-kubectl get application donweather-ms-weather-dev -n argocd -o yaml
-
-# 2. Проверить условия Application
-kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.conditions}' | jq .
-
-# 3. Проверить логи Argo CD Application Controller
-kubectl logs -n argocd -l app.kubernetes.io/name=argocd-application-controller --tail=100 | grep -i "donweather-ms-weather"
-
-# 4. Проверить доступность Git репозитория
-# Убедитесь, что репозиторий доступен и содержит Helm chart по указанному пути
-
-# 5. Проверить доступность dev кластера
-kubectl get application donweather-ms-weather-dev -n argocd -o jsonpath='{.status.conditions[?(@.type=="ConnectionError")]}' | jq .
-
-# 6. Проверить ресурсы в dev кластере
-export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
-kubectl get all -n donweather
-```
 
 ### Настройка доступа к PostgreSQL из dev кластера
 
@@ -2792,254 +2566,18 @@ kubectl get clustersecretstore vault
 kubectl get namespaces
 ```
 
-### Следующие шаги
+## Чек-лист
 
-После настройки dev кластера:
+**Services:** Terraform → Gateway API → cert-manager → Gateway → CSI → Vault → VSO → PostgreSQL → Keycloak → Argo CD → Jenkins → Loki → Fluent Bit → Prometheus Kube Stack → HTTPRoutes.
 
-1. **Настроить доступ к кластеру для разработчиков**
-2. **Настроить CI/CD интеграцию** (Jenkins для развертывания в dev кластер)
-3. **Настроить Argo CD** для управления приложениями в dev кластере (из services кластера)
-4. **Развернуть тестовые приложения** через Argo CD или Helm
+**Dev:** Terraform → CSI → Gateway API → Argo CD (добавить кластер) → cert-manager → Gateway → VSO → Fluent Bit → Namespaces → AppProject.
 
-## Полный чек-лист установки
-
-### Services кластер (инфраструктурные компоненты)
-
-- [ ] Services кластер Kubernetes развернут через Terraform (`terraform/services/`)
-- [ ] `kubectl` настроен и подключен к Services кластеру
-- [ ] Gateway API с NGINX Gateway Fabric установлен
-- [ ] CSI драйвер Timeweb Cloud установлен и работает
-- [ ] Vault установлен, инициализирован и разблокирован
-- [ ] Vault Secrets Operator установлен и работает
-- [ ] VaultConnection и VaultAuth для Vault настроены
-- [ ] Kubernetes auth в Vault настроен для Vault Secrets Operator
-- [ ] cert-manager установлен с поддержкой Gateway API
-- [ ] Gateway создан (HTTP listener работает)
-- [ ] ClusterIssuer создан и готов (Status: Ready)
-- [ ] Certificate создан и Secret `gateway-tls-cert` существует
-- [ ] HTTPS listener Gateway активирован (после создания Secret)
-- [ ] Секреты PostgreSQL сохранены в Vault (путь: `secret/postgresql/admin` с ключами: `postgres_password`, `replication_password`)
-- [ ] VaultStaticSecret `postgresql-admin-credentials` создан и синхронизирован
-- [ ] Secret `postgresql-admin-credentials` создан Vault Secrets Operator
-- [ ] PostgreSQL установлен через Helm Bitnami и доступен
-- [ ] База данных `keycloak` и пользователь `keycloak` созданы вручную в PostgreSQL
-- [ ] Credentials для Keycloak DB сохранены в Vault (путь: `secret/keycloak/database`)
-- [ ] Admin credentials для Keycloak сохранены в Vault (путь: `secret/keycloak/admin`)
-- [ ] VaultStaticSecret `keycloak-db-credentials` создан и синхронизирован в namespace `keycloak`
-- [ ] VaultStaticSecret `keycloak-admin-credentials` создан и синхронизирован в namespace `keycloak`
-- [ ] Secret `keycloak-db-credentials` создан Vault Secrets Operator
-- [ ] Secret `keycloak-admin-credentials` создан Vault Secrets Operator
-- [ ] Адрес PostgreSQL обновлен в `keycloak-instance.yaml`
-- [ ] Keycloak Operator установлен и Keycloak инстанс готов
-- [ ] Keycloak успешно подключен к PostgreSQL (проверено в логах)
-- [ ] Argo CD установлен и сервисы готовы
-- [ ] Клиент `argocd` создан в Keycloak с правильными redirect URIs
-- [ ] Client Secret для Argo CD сохранен в Vault (путь: `secret/argocd/oidc` с ключом `client_secret`)
-- [ ] VaultStaticSecret `argocd-oidc-secret` создан и синхронизирован в namespace `argocd`
-- [ ] Ключ `oidc.keycloak.clientSecret` добавлен в секрет `argocd-secret` с реальным значением (не строка с `$`)
-- [ ] Argo CD обновлен с OIDC конфигурацией
-- [ ] OIDC аутентификация через Keycloak работает (проверено в браузере)
-- [ ] RBAC настроен для использования групп из Keycloak (опционально)
-- [ ] Jenkins установлен и сервисы готовы
-- [ ] GitHub Personal Access Token создан в GitHub
-- [ ] GitHub token сохранен в Vault (путь: `secret/jenkins/github` с ключом `token`)
-- [ ] VaultStaticSecret `jenkins-github-token` создан и синхронизирован в namespace `jenkins`
-- [ ] Secret `jenkins-github-token` создан Vault Secrets Operator с ключом `token`
-- [ ] Jenkins обновлен с конфигурацией GitHub credentials через JCasC
-- [ ] GitHub credentials доступны в Jenkins (ID: `github-token`)
-- [ ] Admin credentials для Grafana сохранены в Vault (путь: `secret/grafana/admin`)
-- [ ] VaultStaticSecret `grafana-admin-credentials` создан и синхронизирован в namespace `kube-prometheus-stack`
-- [ ] Secret `grafana-admin` создан Vault Secrets Operator
-- [ ] Prometheus Kube Stack установлен и сервисы готовы
-- [ ] Клиент `grafana` создан в Keycloak с правильными redirect URIs
-- [ ] Client Secret для Grafana сохранен в Vault (путь: `secret/grafana/oidc` с ключом `client_secret`)
-- [ ] VaultStaticSecret `grafana-oidc-secret` создан и синхронизирован в namespace `kube-prometheus-stack`
-- [ ] Secret `grafana-oidc-secret` создан Vault Secrets Operator с ключом `client_secret`
-- [ ] Переменная окружения `GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET` установлена в поде Grafana (через `envValueFrom`)
-- [ ] OIDC аутентификация через Keycloak работает в Grafana (проверено в браузере)
-- [ ] RBAC настроен для использования групп из Keycloak (GrafanaAdmins → Admin, GrafanaEditors → Editor)
-- [ ] Jaeger установлен и сервисы готовы
-- [ ] HTTPRoute для Argo CD созданы и привязаны к Gateway
-- [ ] HTTPRoute для Jenkins созданы и привязаны к Gateway
-- [ ] HTTPRoute для Grafana созданы и привязаны к Gateway
-- [ ] HTTPRoute для Keycloak созданы и привязаны к Gateway
-- [ ] Keycloak настроен и доступен через HTTPS
-
-### Dev кластер (для микросервисов)
-
-- [ ] Dev кластер Kubernetes развернут через Terraform (`terraform/dev/`)
-- [ ] `kubectl` настроен и подключен к Dev кластеру
-- [ ] Проект `dev` создан в Timeweb Cloud
-- [ ] Необходимые компоненты установлены на Dev кластере (если требуются)
-
-## Проверка работоспособности
+## Проверка
 
 ```bash
-# Проверить статус всех компонентов
-kubectl get nodes
-kubectl get pods -A
-kubectl get gateway -A
-kubectl get httproute -A
-kubectl get certificate -A
-kubectl get clusterissuer
-
-# Проверить доступность через браузер
-# Argo CD: https://argo.buildbyte.ru
-# Jenkins: https://jenkins.buildbyte.ru
-# Grafana: https://grafana.buildbyte.ru
-# Keycloak: https://keycloak.buildbyte.ru
-
-# Проверить редиректы HTTP -> HTTPS
-curl -I http://argo.buildbyte.ru  # Должен вернуть 301 на https://
-curl -I http://jenkins.buildbyte.ru  # Должен вернуть 301 на https://
-curl -I http://grafana.buildbyte.ru  # Должен вернуть 301 на https://
-curl -I http://keycloak.buildbyte.ru  # Должен вернуть 301 на https://
+kubectl get nodes && kubectl get pods -A && kubectl get gateway -A
 ```
 
-## Дополнительная документация
+Сервисы: https://argo.buildbyte.ru, https://jenkins.buildbyte.ru, https://grafana.buildbyte.ru, https://keycloak.buildbyte.ru.
 
-- **Настройка Kubernetes Auth в Vault для Vault Secrets Operator:** см. раздел 8.1 в этом документе
-- **Настройка Keycloak Authentication для Jenkins:** [`helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md`](helm/services/jenkins/JENKINS_KEYCLOAK_SETUP.md)
-
-## Важные замечания
-
-1. **Порядок установки критичен:**
-   - **Vault должен быть установлен одним из первых** (для хранения секретов)
-   - **Vault Secrets Operator должен быть установлен после Vault** (для синхронизации секретов)
-   - **VaultConnection и VaultAuth должны быть настроены после Vault Secrets Operator** (для подключения к Vault)
-   - **PostgreSQL должен быть установлен перед Keycloak** (Keycloak использует PostgreSQL в качестве базы данных)
-   - **Loki должен быть установлен перед Prometheus Kube Stack** (Loki настроен как источник данных в Grafana через `additionalDataSources`)
-   - Gateway должен быть создан перед ClusterIssuer (ClusterIssuer ссылается на Gateway для HTTP-01 challenge)
-   - Приложения должны быть установлены перед созданием HTTPRoute (HTTPRoute ссылаются на их сервисы)
-   - Secret для TLS создается cert-manager автоматически, но HTTPS listener не будет работать до его создания
-   - Keycloak Operator требует установки CRDs перед установкой оператора
-   - Vault использует file storage в standalone режиме, убедитесь, что CSI драйвер работает корректно
-   - **Все секреты должны создаваться через Vault Secrets Operator (VaultStaticSecret)**, а не напрямую через `kubectl create secret`
-
-2. **Зависимости компонентов:**
-   - **Vault Secrets Operator** → требует **Vault** (для синхронизации секретов)
-   - **VaultAuth** → требует **Vault**, **VaultConnection** и **Kubernetes auth в Vault** (для аутентификации)
-   - **VaultStaticSecret** → требует **VaultAuth** и **секреты в Vault** (для синхронизации)
-   - **PostgreSQL** → требует **секреты через Vault Secrets Operator** (для паролей администратора и репликации)
-   - **Приложения** → требуют **секреты через Vault Secrets Operator** (Keycloak, Grafana и т.д.)
-   - **Keycloak** → требует **PostgreSQL** (в качестве базы данных)
-   - **Prometheus Kube Stack (Grafana)** → требует **Loki** (Loki настроен как источник данных в Grafana)
-   - **ClusterIssuer** → требует **Gateway** (для HTTP-01 challenge через Gateway API)
-   - **Certificate** → требует **ClusterIssuer** и **Gateway** (для HTTP-01 challenge)
-   - **HTTPRoute** → требует **Gateway** и **сервисы приложений** (backendRefs ссылаются на сервисы)
-
-3. **Secret для TLS:** Gateway не будет работать с HTTPS, пока Secret `gateway-tls-cert` не создан cert-manager
-
-4. **Зоны доступности:** Убедитесь, что CSI драйвер и кластер находятся в одной зоне доступности
-
-5. **API ключи:** Заполните все необходимые API ключи и секреты перед установкой компонентов
-
-## Порядок зависимостей
-
-```
-Terraform (K8s кластер)
-  ↓
-Gateway API
-  ↓
-CSI драйвер (независимо)
-  ↓
-Vault (установка и инициализация)
-  ↓
-Vault Secrets Operator (синхронизирует секреты из Vault)
-  ↓
-VaultConnection + VaultAuth (настройка подключения)
-  ↓
-PostgreSQL (использует секреты из Vault Secrets Operator)
-  ↓
-Keycloak Operator → Keycloak (использует PostgreSQL и секреты из Vault Secrets Operator)
-  ↓
-cert-manager (независимо)
-  ↓
-Gateway (HTTP listener работает сразу)
-  ↓
-ClusterIssuer (ссылается на Gateway)
-  ↓
-Certificate (ссылается на ClusterIssuer, создает Secret)
-  ↓
-HTTPS listener Gateway активируется (после создания Secret)
-  ↓
-Приложения (установка):
-  - Jenkins & Argo CD
-  - Prometheus Kube Stack (Prometheus + Grafana)
-  - Jaeger
-  ↓
-HTTPRoute (ссылаются на Gateway и сервисы приложений)
-```
-
-**Важно:**
-- **Vault** должен быть установлен до Vault Secrets Operator
-- **Vault Secrets Operator** должен быть установлен до приложений, которые используют секреты
-- Все секреты создаются через Vault Secrets Operator (VaultStaticSecret), который синхронизирует их из Vault
-- Секреты для Keycloak, Grafana и других приложений должны быть сохранены в Vault перед установкой приложений
-
-## Планы на будущее
-
-1. **Написать модули для Terraform**
-   - Создать переиспользуемые Terraform модули для стандартизации развертывания компонентов
-   - Упростить конфигурацию и уменьшить дублирование кода
-   - Обеспечить единообразие развертывания в разных окружениях
-
-2. **Сделать кластеризацию PostgreSQL, Keycloak, Vault**
-   - Настроить PostgreSQL в режиме высокой доступности (HA) с репликацией
-   - Настроить Keycloak в кластерном режиме с несколькими инстансами
-   - Настроить Vault в HA режиме с Raft storage backend и несколькими репликами
-   - Обеспечить отказоустойчивость критических компонентов инфраструктуры
-
-3. **Ввести разграничение по ролям Keycloak**
-   - Настроить детальное разграничение доступа на основе ролей и групп в Keycloak
-   - Реализовать RBAC для различных компонентов (Argo CD, Jenkins, Grafana)
-   - Настроить политики доступа для разных команд и окружений
-
-4. **Занести создание кластера в pipeline**
-   - Автоматизировать развертывание Kubernetes кластеров через CI/CD pipeline
-   - Интегрировать Terraform в процесс сборки и развертывания
-   - Обеспечить автоматическое тестирование и валидацию конфигурации
-
-5. **Настроить централизованное логирование**
-   - Развернуть систему централизованного сбора логов (Loki, ELK Stack или аналоги)
-   - Настроить сбор логов со всех компонентов инфраструктуры
-   - Интегрировать логирование с Grafana для визуализации и анализа
-   - Настроить ротацию и хранение логов
-
-6. **Реализовать стратегию бэкапов**
-   - Настроить автоматические бэкапы для PostgreSQL (базы данных Keycloak и других сервисов)
-   - Настроить бэкапы для Vault (unseal keys, policies, secrets)
-   - Настроить бэкапы для конфигураций Kubernetes (etcd, манифесты)
-   - Реализовать процедуры восстановления из бэкапов
-   - Настроить тестирование восстановления
-
-7. **Настроить алертинг и мониторинг**
-   - Настроить AlertManager для Prometheus
-   - Создать правила алертинга для критических компонентов (Vault, PostgreSQL, Keycloak)
-   - Настроить интеграцию с системами уведомлений (Slack, Email, PagerDuty)
-   - Настроить мониторинг доступности сервисов и SLA
-
-8. **Внедрить GitOps для всей инфраструктуры**
-   - Настроить Argo CD для управления всей инфраструктурой через Git
-   - Автоматизировать развертывание изменений через Git-коммиты
-   - Настроить автоматическую синхронизацию конфигураций
-   - Реализовать процесс code review для изменений инфраструктуры
-
-9. **Усилить безопасность**
-   - Внедрить Pod Security Standards для всех namespace
-   - Настроить Network Policies для изоляции трафика между компонентами
-   - Настроить OPA Gatekeeper или Kyverno для политик безопасности
-   - Реализовать сканирование образов контейнеров на уязвимости
-   - Настроить регулярное обновление компонентов и патчей безопасности
-
-10. **Оптимизировать использование ресурсов**
-    - Настроить Horizontal Pod Autoscaler (HPA) для автоматического масштабирования
-    - Настроить Vertical Pod Autoscaler (VPA) для оптимизации запросов ресурсов
-    - Провести аудит использования ресурсов и оптимизацию
-    - Настроить лимиты и квоты для namespace
-
-11. **Настроить Jenkins через JCasC (Jenkins Configuration as Code)**
-    - Перенести все настройки Jenkins из init scripts в JCasC конфигурацию
-    - Настроить security realm, authorization strategy и другие компоненты через JCasC
-    - Обеспечить полное управление конфигурацией Jenkins через код
-    - Упростить процесс обновления и версионирования конфигурации Jenkins
+**Порядок:** Vault → VSO → PostgreSQL → Keycloak. Loki — до Prometheus Kube Stack. HTTP redirect routes — до Gateway. Секреты — через VaultStaticSecret.
