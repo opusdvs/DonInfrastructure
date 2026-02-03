@@ -1178,7 +1178,8 @@ agent:
   #   secretName: my-k8s-secret
 
   # -- Node labels for pod assignment
-  nodeSelector: {}
+  nodeSelector:
+    jenkins.io/agent: dedicated
   # Key Value selectors. Ex:
   # nodeSelector
   #   jenkins-agent: v1
@@ -1218,8 +1219,27 @@ agent:
   # The raw yaml of a Pod API Object, for example, this allows usage of toleration for agent pods.
   # https://github.com/jenkinsci/kubernetes-plugin#using-yaml-to-define-pod-templates
   # https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
-  # -- The raw yaml of a Pod API Object to merge into the agent spec
-  yamlTemplate: ""
+  # -- The raw yaml of a Pod API Object to merge into the agent spec (должна быть строка, не объект)
+  # Жёсткая привязка к выделенной ноде: nodeSelector + nodeAffinity (required) + tolerations.
+  # override — чтобы этот spec имел приоритет над значениями из чарта/плагина.
+  yamlTemplate: |-
+    spec:
+      nodeSelector:
+        jenkins.io/agent: dedicated
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: jenkins.io/agent
+                    operator: In
+                    values:
+                      - dedicated
+      tolerations:
+        - key: "jenkins.io/agent"
+          operator: "Equal"
+          value: "dedicated"
+          effect: "NoSchedule"
   # yamlTemplate: |-
   #   apiVersion: v1
   #   kind: Pod
@@ -1230,7 +1250,7 @@ agent:
   #       value: "value"
 
   # -- Defines how the raw yaml field gets merged with yaml definitions from inherited pod templates. Possible values: "merge" or "override"
-  yamlMergeStrategy: "override"
+  yamlMergeStrategy: "merge"
   # -- Controls whether the defined yaml merge strategy will be inherited if another defined pod template is configured to inherit from the current one
   inheritYamlMergeStrategy: false
   # -- Timeout in seconds for an agent to be online

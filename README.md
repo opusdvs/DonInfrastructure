@@ -2424,6 +2424,53 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 kubectl get namespaces
 ```
 
+### Шаг 10.1: Создание Docker registry secret для микросервисов в dev кластере
+
+Чтобы поды микросервисов в dev кластере могли тянуть образы из приватного Docker Registry (например, Timeweb Container Registry), в каждом namespace, где разворачиваются приложения, нужно создать секрет типа `kubernetes.io/dockerconfigjson`.
+
+**Данные для секрета** — те же, что и для Jenkins (раздел 12.1): URL реестра, username и API Token. Пример для `buildbyte-container-registry.registry.twcstorage.ru`.
+
+**Создание секрета вручную (в нужном namespace):**
+
+```bash
+# Переключиться на dev кластер
+export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
+
+# Namespace, в котором будут запускаться микросервисы (например, donweather)
+NAMESPACE=donweather
+kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+
+# Имя секрета (его потом указывают в imagePullSecrets в Deployment/Helm values)
+kubectl create secret docker-registry registry-docker-registry \
+  --docker-server=buildbyte-container-registry.registry.twcstorage.ru \
+  --docker-username=buildbyte-container-registry \
+  --docker-password='<API_TOKEN_ИЗ_ПАНЕЛИ_РЕЕСТРА>' \
+  --namespace=$NAMESPACE \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Проверить
+kubectl get secret registry-docker-registry -n $NAMESPACE
+```
+
+**Использование в приложении:**
+
+В манифестах Deployment или в Helm values приложения укажите:
+
+```yaml
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: registry-docker-registry
+```
+
+Если секрет создаётся через Vault Secrets Operator (VaultStaticSecret), настройте синхронизацию из Vault в нужный namespace dev кластера и задайте тип секрета `kubernetes.io/dockerconfigjson` (структура данных — `.dockerconfigjson`).
+
+**Важно:**
+- Секрет должен существовать в том же namespace, что и поды микросервисов.
+- Для нескольких namespace (например, `donweather`, `other-app`) создайте такой же секрет в каждом.
+- Имя секрета (например, `registry-docker-registry`) должно совпадать с `imagePullSecrets[].name` в чарте или манифестах приложения.
+
 ### Шаг 11: Создание AppProject dev-microservices для микросервисов
 
 AppProject `dev-microservices` используется для развертывания микросервисов в dev кластере.
