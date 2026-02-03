@@ -456,6 +456,26 @@ cat /tmp/vault-root-token.txt
 - После перезапуска Vault потребуется повторное разблокирование (unseal)
 - Для автоматического unsealing в продакшене будет настроен auto-unseal через KMS
 
+#### 7.3. Создание HTTPRoute для Vault в services кластере
+
+После установки Vault и готовности Gateway (и сертификата для `vault.buildbyte.ru`) примените HTTPRoute для доступа к Vault по HTTPS. Маршрут разрешает все методы (GET, POST, PUT, DELETE и др.), необходимые для Vault API и для Vault Secrets Operator из dev кластера.
+
+```bash
+# Применить HTTPRoute для HTTPS доступа к Vault
+kubectl apply -f manifests/services/gateway/routes/vault-https-route.yaml
+
+# Применить HTTPRoute для редиректа HTTP → HTTPS (если ещё не применён в разделе 5)
+kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
+
+# Проверить HTTPRoute
+kubectl get httproute -n vault
+kubectl describe httproute vault-server -n vault
+```
+
+После настройки HTTPRoute Vault будет доступен по адресу: `https://vault.buildbyte.ru`
+
+**Примечание:** Редирект `vault-http-redirect.yaml` обычно уже применён в разделе 5 (Создание Gateway). HTTPS-маршрут `vault-https-route.yaml` нужно применить после установки Vault (сервис `vault:8200` в namespace `vault`).
+
 ### 8. Установка Vault Secrets Operator
 
 **Важно:** Vault Secrets Operator должен быть установлен после Vault, так как он синхронизирует секреты из Vault в Kubernetes Secrets.
