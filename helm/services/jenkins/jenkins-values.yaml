@@ -432,6 +432,7 @@ controller:
     - keycloak:2.3.2
     - pipeline-github:2.8-162.382498405fdc
     - github-branch-source:1925.v62fb_7ffb_08ce
+    - job-dsl:1.93
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
@@ -593,6 +594,67 @@ controller:
                       description: "Docker Registry credentials для доступа к приватному репозиторию"
                       username: "${jenkins-docker-registry-username}"
                       password: "${jenkins-docker-registry-password}"
+      # Автоматическое создание pipeline для микросервисов
+      jobs-config: |
+        jobs:
+          # Folder для DonWeather проекта
+          - script: |
+              folder('donweather') {
+                displayName('DonWeather')
+                description('CI/CD pipelines для микросервисов DonWeather')
+              }
+          # Pipeline для donweather-ms-weather
+          - script: |
+              multibranchPipelineJob('donweather/ms-weather') {
+                displayName('ms-weather')
+                description('CI/CD pipeline для микросервиса weather')
+                branchSources {
+                  github {
+                    id('ms-weather-github')
+                    repoOwner('opusdvs')
+                    repository('DonWeather-ms-weather')
+                    scanCredentialsId('github-token')
+                    buildOriginBranch(true)
+                    buildOriginBranchWithPR(false)
+                    buildOriginPRMerge(true)
+                    buildForkPRMerge(false)
+                  }
+                }
+                orphanedItemStrategy {
+                  discardOldItems {
+                    numToKeep(10)
+                  }
+                }
+                triggers {
+                  periodic(5)
+                }
+              }
+          # Pipeline для donweather-front
+          - script: |
+              multibranchPipelineJob('donweather/front') {
+                displayName('front')
+                description('CI/CD pipeline для фронтенда DonWeather')
+                branchSources {
+                  github {
+                    id('front-github')
+                    repoOwner('opusdvs')
+                    repository('DonWeather-front')
+                    scanCredentialsId('github-token')
+                    buildOriginBranch(true)
+                    buildOriginBranchWithPR(false)
+                    buildOriginPRMerge(true)
+                    buildForkPRMerge(false)
+                  }
+                }
+                orphanedItemStrategy {
+                  discardOldItems {
+                    numToKeep(10)
+                  }
+                }
+                triggers {
+                  periodic(5)
+                }
+              }
     #  welcome-message: |
     #    jenkins:
     #      systemMessage: Welcome to our CI\CD server. This Jenkins is configured and managed 'as code'.
