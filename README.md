@@ -2424,37 +2424,79 @@ kubectl create namespace <название-сервиса> --dry-run=client -o y
 kubectl get namespaces
 ```
 
-### Шаг 10.1: Создание Docker registry secret для микросервисов в dev кластере
+### Шаг 10.1: Создание Docker registry secret для микросервисов в dev кластере (Vault + VaultStaticSecret)
 
-Чтобы поды микросервисов в dev кластере могли тянуть образы из приватного Docker Registry (например, Timeweb Container Registry), в каждом namespace, где разворачиваются приложения, нужно создать секрет типа `kubernetes.io/dockerconfigjson`.
+Чтобы поды микросервисов в dev кластере могли тянуть образы из приватного Docker Registry, секрет создаётся через Vault и VaultStaticSecret. Данные те же, что и для Jenkins (раздел 12.1): URL реестра, username и API Token (например, `buildbyte-container-registry.registry.twcstorage.ru`).
 
-**Данные для секрета** — те же, что и для Jenkins (раздел 12.1): URL реестра, username и API Token. Пример для `buildbyte-container-registry.registry.twcstorage.ru`.
+**Предварительные условия:** Vault в services кластере доступен из dev кластера, Vault Secrets Operator в dev кластере настроен (Шаг 8), политика Vault разрешает чтение `secret/data/dev/*` (политика `vault-secrets-operator-dev-policy` по умолчанию разрешает `secret/data/*`).
 
-**Создание секрета вручную (в нужном namespace):**
+#### 10.1.1. Сохранение секрета в Vault
+
+В Vault нужно сохранить один ключ `.dockerconfigjson` — JSON для Docker auth (формат для `kubernetes.io/dockerconfigjson`). Поле `auth` — это base64 от `username:password`.
+
+```bash
+# Переключиться на services кластер (Vault установлен там)
+export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
+
+# Токен Vault (root или с правами на запись в secret/)
+export VAULT_TOKEN='<ваш_vault_token>'
+
+# Параметры реестра (те же, что для Jenkins)
+REGISTRY_SERVER="buildbyte-container-registry.registry.twcstorage.ru"
+REGISTRY_USER="buildbyte-container-registry"
+REGISTRY_PASSWORD="<API_TOKEN_ИЗ_ПАНЕЛИ_РЕЕСТРА>"
+
+# Сформировать auth (base64 от username:password)
+AUTH=$(echo -n "${REGISTRY_USER}:${REGISTRY_PASSWORD}" | base64 -w0)
+
+# Полный JSON для .dockerconfigjson
+DOCKERCONFIGJSON="{\"auths\":{\"${REGISTRY_SERVER}\":{\"username\":\"${REGISTRY_USER}\",\"password\":\"${REGISTRY_PASSWORD}\",\"auth\":\"${AUTH}\"}}}"
+
+# Сохранить в Vault (путь для dev кластера). Задайте VAULT_TOKEN в текущей оболочке перед выполнением.
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='$VAULT_TOKEN'
+vault kv put secret/dev/docker-registry .dockerconfigjson='$DOCKERCONFIGJSON'
+"
+
+# Проверить
+kubectl exec -it vault-0 -n vault -- sh -c "
+export VAULT_ADDR='http://127.0.0.1:8200'
+export VAULT_TOKEN='\$VAULT_TOKEN'
+vault kv get -format=json secret/dev/docker-registry | jq -r '.data.data[".dockerconfigjson"]' | head -c 80
+echo '...'
+"
+```
+
+#### 10.1.2. Создание VaultStaticSecret в dev кластере
+
+Манифест: `manifests/dev/docker-registry/registry-docker-registry-vaultstaticsecret.yaml`. Он создаёт в namespace `donweather` Secret типа `kubernetes.io/dockerconfigjson` с именем `registry-docker-registry`.
 
 ```bash
 # Переключиться на dev кластер
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
-# Namespace, в котором будут запускаться микросервисы (например, donweather)
-NAMESPACE=donweather
-kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+# Создать namespace (если ещё не создан)
+kubectl create namespace donweather --dry-run=client -o yaml | kubectl apply -f -
 
-# Имя секрета (его потом указывают в imagePullSecrets в Deployment/Helm values)
-kubectl create secret docker-registry registry-docker-registry \
-  --docker-server=buildbyte-container-registry.registry.twcstorage.ru \
-  --docker-username=buildbyte-container-registry \
-  --docker-password='<API_TOKEN_ИЗ_ПАНЕЛИ_РЕЕСТРА>' \
-  --namespace=$NAMESPACE \
-  --dry-run=client -o yaml | kubectl apply -f -
+# Применить VaultStaticSecret
+kubectl apply -f manifests/dev/docker-registry/registry-docker-registry-vaultstaticsecret.yaml
+
+# Дождаться синхронизации
+kubectl wait --for=condition=SecretSynced vaultstaticsecret/registry-docker-registry -n donweather --timeout=120s
 
 # Проверить
-kubectl get secret registry-docker-registry -n $NAMESPACE
+kubectl get vaultstaticsecret registry-docker-registry -n donweather
+kubectl get secret registry-docker-registry -n donweather
+kubectl get secret registry-docker-registry -n donweather -o jsonpath='{.type}' && echo
+# Должно вывести: kubernetes.io/dockerconfigjson
 ```
 
-**Использование в приложении:**
+Для **другого namespace** (например, `other-app`) скопируйте манифест, измените `metadata.namespace` и примените в нужном namespace.
 
-В манифестах Deployment или в Helm values приложения укажите:
+#### 10.1.3. Использование в приложении
+
+В Helm values или манифестах Deployment укажите:
 
 ```yaml
 spec:
@@ -2464,12 +2506,9 @@ spec:
         - name: registry-docker-registry
 ```
 
-Если секрет создаётся через Vault Secrets Operator (VaultStaticSecret), настройте синхронизацию из Vault в нужный namespace dev кластера и задайте тип секрета `kubernetes.io/dockerconfigjson` (структура данных — `.dockerconfigjson`).
-
 **Важно:**
-- Секрет должен существовать в том же namespace, что и поды микросервисов.
-- Для нескольких namespace (например, `donweather`, `other-app`) создайте такой же секрет в каждом.
-- Имя секрета (например, `registry-docker-registry`) должно совпадать с `imagePullSecrets[].name` в чарте или манифестах приложения.
+- Секрет создаётся в том namespace, где задан VaultStaticSecret (в примере — `donweather`). Поды микросервисов должны быть в том же namespace или создайте отдельный VaultStaticSecret в каждом namespace.
+- Имя секрета `registry-docker-registry` должно совпадать с `imagePullSecrets[].name` в чарте или манифестах приложения.
 
 ### Шаг 11: Создание AppProject dev-microservices для микросервисов
 
