@@ -129,6 +129,53 @@ terraform apply
 # ~/kubeconfig-services-cluster.yaml
 ```
 
+#### 1.5.1. Изоляция ноды для Jenkins агентов
+
+После создания Services кластера рекомендуется выделить одну воркер-ноду под запуск Jenkins агентов, чтобы поды сборок не конкурировали за ресурсы с контроллером Jenkins и остальными сервисами (Argo CD, Vault, Grafana и т.д.).
+
+1. **Подключитесь к кластеру и выберите ноду:**
+
+```bash
+export KUBECONFIG=~/kubeconfig-services-cluster.yaml
+kubectl get nodes -o wide
+```
+
+Выберите одну из воркер-нод (не master). Запомните её имя (столбец `NAME`), например `services-cluster-worker-0`.
+
+2. **Добавьте метку и taint на ноду:**
+
+Подставьте имя ноды вместо `<NODE_NAME>`.
+
+```bash
+# Метка — по ней Jenkins агенты будут выбирать эту ноду (nodeSelector)
+kubectl label nodes <NODE_NAME> jenkins.io/agent=dedicated --overwrite
+
+# Taint — только поды с соответствующим toleration смогут планироваться на эту ноду
+# Остальные поды (Jenkins controller, Argo CD и т.д.) на неё не попадут
+kubectl taint nodes <NODE_NAME> jenkins.io/agent=dedicated:NoSchedule --overwrite
+```
+
+3. **Настройте Jenkins (Helm values), чтобы агенты запускались только на этой ноде:**
+
+В `helm/services/jenkins/jenkins-values.yaml` в секции `agent` укажите `nodeSelector` и добавьте `tolerations` через `yamlTemplate`:
+
+```yaml
+agent:
+  enabled: true
+  nodeSelector:
+    jenkins.io/agent: dedicated
+  yamlTemplate: |-
+    spec:
+      tolerations:
+        - key: "jenkins.io/agent"
+          operator: "Equal"
+          value: "dedicated"
+          effect: "NoSchedule"
+  # ... остальные параметры agent
+```
+
+После применения изменений поды Jenkins агентов будут создаваться только на выделенной ноде.
+
 #### 1.6. Развертывание Dev кластера
 
 ```bash
