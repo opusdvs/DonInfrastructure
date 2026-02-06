@@ -669,46 +669,28 @@ kubectl describe vaultstaticsecret postgresql-admin-credentials -n postgresql
 kubectl get secret postgresql-admin-credentials -n postgresql
 ```
 
-#### 9.3. Установка PostgreSQL через Helm Bitnami
+#### 9.3. Установка PostgreSQL (PostGIS)
+
+Используется образ `postgis/postgis:16-3.4` (PostgreSQL 16 + PostGIS 3.4). Деплой через StatefulSet.
 
 ```bash
-# 1. Добавить Helm репозиторий Bitnami
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
+# Применить StatefulSet, Service (LoadBalancer) и Headless Service
+kubectl apply -f manifests/services/postgresql/postgresql-statefulset.yaml
 
-# 2. Установить PostgreSQL
-# Настройки для использования существующего Secret уже указаны в helm/services/postgresql/postgresql-values.yaml
-helm upgrade --install postgresql bitnami/postgresql \
-  --namespace postgresql \
-  --create-namespace \
-  -f helm/services/postgresql/postgresql-values.yaml
+# Дождаться готовности
+kubectl wait --for=condition=ready pod -l app=postgresql -n postgresql --timeout=600s
 
-# 3. Проверить установку
-kubectl get pods -n postgresql
-kubectl get statefulset -n postgresql
-kubectl get pvc -n postgresql
+# Проверить
+kubectl get sts,pods,svc,pvc -n postgresql
 
-# 5. Дождаться готовности PostgreSQL
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgresql -n postgresql --timeout=600s
+# Получить внешний IP
+kubectl get svc postgresql -n postgresql -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
-**Важно:**
-- PostgreSQL использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища
-- Размер хранилища по умолчанию: 8Gi (можно изменить в `helm/services/postgresql/postgresql-values.yaml`)
-- Secret `postgresql-admin-credentials` должен быть создан через Vault Secrets Operator перед установкой
-
-**Проверка подключения к PostgreSQL:**
+**Проверка подключения:**
 ```bash
-# Получить имя pod PostgreSQL
-POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
-
-# Подключиться к PostgreSQL
-kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres
-
-# В psql выполнить:
-# \l - список баз данных
-# \du - список пользователей
-# \q - выход
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app=postgresql -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $POSTGRES_POD -n postgresql -- psql -U postgres -c "SELECT PostGIS_Version();"
 ```
 
 ### 10. Установка Keycloak Operator
@@ -786,7 +768,7 @@ kubectl get secret keycloak-admin-credentials -n keycloak
 
 ```bash
 # Получить имя pod PostgreSQL
-POSTGRES_POD=$(kubectl get pods -n postgresql -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+POSTGRES_POD=$(kubectl get pods -n postgresql -l app=postgresql -o jsonpath='{.items[0].metadata.name}')
 
 # Получить пароль администратора PostgreSQL из Secret
 POSTGRES_PASSWORD=$(kubectl get secret postgresql-admin-credentials -n postgresql -o jsonpath='{.data.postgres_password}' | base64 -d)
@@ -1923,6 +1905,28 @@ kubectl get certificate -n default -w
 |----------|--------|
 | donweather.dev.buildbyte.ru | donweather-tls-cert |
 | api.donweather.dev.buildbyte.ru | donweather-api-tls-cert |
+
+#### 7.1. Создание HTTPRoute для DonWeather
+
+После готовности сертификатов создайте маршруты:
+
+```bash
+# Создать namespace (если ещё не создан)
+kubectl create namespace donweather --dry-run=client -o yaml | kubectl apply -f -
+
+# HTTP → HTTPS редирект
+kubectl apply -f manifests/dev/gateway/routes/donweather-http-redirect.yaml
+
+# HTTPS маршрут (api.donweather.dev.buildbyte.ru → микросервисы по path)
+kubectl apply -f manifests/dev/gateway/routes/donweather-api-https-route.yaml
+
+# Проверить
+kubectl get httproute -n donweather
+```
+
+Маршрутизация по path:
+- `/api/v1/weather` → `donweather-ms-weather-dev:8080`
+- `/api/v1/georesolve` → `donweather-ms-georesolve-dev:8080`
 
 ### 8. Vault Secrets Operator (внешний Vault)
 
