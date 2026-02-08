@@ -12,12 +12,12 @@ spec:
   # Разрешенные источники (репозитории)
   sourceRepos:
     # Репозитории микросервисов
-    - 'https://github.com/opusdvs/DonWeather-ms-weather.git'
-    - 'https://github.com/opusdvs/DonWeather-front.git'
+    #- 'https://github.com/opusdvs/DonWeather-ms-weather.git'
+    #- 'https://github.com/opusdvs/DonWeather-front.git'
     # Репозиторий с конфигурацией инфраструктуры (для values, если используется)
-    - 'https://github.com/opusdvs/DonInfrastructure.git'
+    #- 'https://github.com/opusdvs/DonInfrastructure.git'
     # Разрешить все репозитории с префиксом DonWeather (для новых микросервисов)
-    # - 'https://github.com/opusdvs/DonWeather-*'
+    - 'https://github.com/opusdvs/DonWeather-*'
     # Или разрешить все репозитории (опционально, для гибкости)
     # - '*'
 

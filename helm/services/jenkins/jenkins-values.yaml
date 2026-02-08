@@ -440,6 +440,7 @@ controller:
     - pipeline-github:2.8-162.382498405fdc
     - github-branch-source:1925.v62fb_7ffb_08ce
     - job-dsl:1.93
+    - pipeline-stage-view:2.34
 
   # If set to false, Jenkins will download the minimum required version of all dependencies.
   # -- Download the minimum required version or latest version of all dependencies
