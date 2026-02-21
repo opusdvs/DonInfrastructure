@@ -242,15 +242,19 @@ kubectl version --short
 
 ### 2. Установка Gateway API с NGINX Gateway Fabric
 
+**Версии:**
+- Gateway API: 1.4.1 (experimental)
+- NGINX Gateway Fabric: 2.4.1
+
 ```bash
-# 1. Установить CRDs Gateway API (стандартная версия)
-kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/standard?ref=v2.3.0" | kubectl apply -f -
+# 1. Установить CRDs Gateway API (experimental версия 1.4.1)
+kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/experimental?ref=v2.4.1" | kubectl apply -f -
 
 # 2. Установить CRDs NGINX Gateway Fabric
-kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/crds.yaml
+kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.4.1/deploy/crds.yaml
 
 # 3. Установить контроллер NGINX Gateway Fabric
-kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/default/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.4.1/deploy/default/deploy.yaml
 
 kubectl get pods -n nginx-gateway && kubectl get gatewayclass
 ```
@@ -1712,15 +1716,19 @@ kubectl get storageclass
 
 ### 3. Gateway API с NGINX Gateway Fabric
 
+**Версии:**
+- Gateway API: 1.4.1 (experimental)
+- NGINX Gateway Fabric: 2.4.1
+
 ```bash
-# 1. Установить CRDs Gateway API (стандартная версия)
-kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/standard?ref=v2.3.0" | kubectl apply -f -
+# 1. Установить CRDs Gateway API (experimental версия 1.4.1)
+kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/experimental?ref=v2.4.1" | kubectl apply -f -
 
 # 2. Установить CRDs NGINX Gateway Fabric
-kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/crds.yaml
+kubectl apply --server-side -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.4.1/deploy/crds.yaml
 
 # 3. Установить контроллер NGINX Gateway Fabric
-kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.3.0/deploy/default/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/nginx/nginx-gateway-fabric/v2.4.1/deploy/default/deploy.yaml
 
 # 4. Проверить установку
 kubectl get pods -n nginx-gateway

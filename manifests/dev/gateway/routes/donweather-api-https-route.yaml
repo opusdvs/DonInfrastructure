@@ -33,23 +33,3 @@ spec:
         - name: donweather-ms-georesolve-dev
           port: 8080  # Измените порт, если микросервис использует другой порт
           weight: 1
-
-    # Альтернативные пути (раскомментируйте, если нужны):
-    #
-    # - matches:
-    #     - path:
-    #         type: PathPrefix
-    #         value: /weather
-    #   backendRefs:
-    #     - name: donweather-ms-weather-dev
-    #       port: 8080
-    #       weight: 1
-    #
-    # - matches:
-    #     - path:
-    #         type: PathPrefix
-    #         value: /georesolve
-    #   backendRefs:
-    #     - name: donweather-ms-georesolve-dev
-    #       port: 8080
-    #       weight: 1
