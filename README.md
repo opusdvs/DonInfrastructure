@@ -6,17 +6,18 @@
 
 Проект содержит конфигурацию для двух типов кластеров:
 
-- **Services кластер** (`terraform/services/`) — сервисный кластер для инфраструктурных компонентов (Argo CD, Jenkins, Vault, Grafana, Keycloak и т.д.)
-- **Dev кластер** (`terraform/dev/`) — кластер для разработки и развертывания микросервисов
+- **Services кластер** (`service/terraform/`) — сервисный кластер для инфраструктурных компонентов (Argo CD, Jenkins, Vault, Grafana, Keycloak и т.д.)
+- **Dev кластер** (`dev/terraform/`) — кластер для разработки и развертывания микросервисов
 
 ### Организация конфигураций
 
 Конфигурации разделены по кластерам:
 
-- **`helm/services/`** — Helm values для компонентов Services кластера
-- **`helm/dev/`** — Helm values для компонентов Dev кластера
-- **`manifests/services/`** — Kubernetes манифесты для Services кластера
-- **`manifests/dev/`** — Kubernetes манифесты для Dev кластера
+- **`service/helm/`** — Helm values для компонентов Services кластера
+- **`dev/helm/`** — Helm values для компонентов Dev кластера
+- **`service/manifests/`** — Kubernetes манифесты для Services кластера
+- **`dev/manifests/`** — Kubernetes манифесты для Dev кластера
+- **`terraform-module/`** — общие Terraform-модули (используются в `service/terraform/`)
 
 ## Порядок установки Kubernetes кластера
 
@@ -43,7 +44,7 @@ Terraform использует провайдер Timeweb Cloud. Настрой�
 # Установить API токен Timeweb Cloud
 export TWC_TOKEN="your-timeweb-cloud-api-token"
 
-# Или создать файл terraform/.terraformrc с настройками провайдера
+# Или создать файл .terraformrc в корне проекта или в dev/terraform / service/terraform с настройками провайдера
 ```
 
 **Важно:** API токен должен иметь права на:
@@ -79,7 +80,7 @@ export AWS_SECRET_ACCESS_KEY="your-s3-secret-key"
 
 При необходимости измените переменные в соответствующей директории:
 
-**Для Services кластера** (`terraform/services/variables.tf`):
+**Для Services кластера** (`service/terraform/variables.tf`):
 ```hcl
 variable "cluster_name" {
   default = "services-cluster"  # Имя кластера
@@ -94,7 +95,7 @@ variable "project_name" {
 }
 ```
 
-**Для Dev кластера** (`terraform/dev/variables.tf`):
+**Для Dev кластера** (`dev/terraform/variables.tf`):
 ```hcl
 variable "cluster_name" {
   default = "dev-cluster"  # Имя кластера
@@ -113,7 +114,7 @@ variable "project_name" {
 
 ```bash
 # Перейти в директорию services
-cd terraform/services
+cd service/terraform
 
 # Инициализировать Terraform (загрузит провайдеры и настроит backend)
 terraform init
@@ -157,7 +158,7 @@ kubectl taint nodes <NODE_NAME> jenkins.io/agent=dedicated:NoSchedule --overwrit
 
 3. **Настройте Jenkins (Helm values), чтобы агенты запускались только на этой ноде:**
 
-В `helm/services/jenkins/jenkins-values.yaml` в секции `agent` укажите `nodeSelector` и добавьте `tolerations` через `yamlTemplate`:
+В `service/helm/jenkins/jenkins-values.yaml` в секции `agent` укажите `nodeSelector` и добавьте `tolerations` через `yamlTemplate`:
 
 ```yaml
 agent:
@@ -180,7 +181,7 @@ agent:
 
 ```bash
 # Перейти в директорию dev
-cd terraform/dev
+cd dev/terraform
 
 # Инициализировать Terraform (загрузит провайдеры и настроит backend)
 terraform init
@@ -236,7 +237,7 @@ kubectl version --short
 - Эти credentials будут использоваться для настройки Jenkins и доступа к приватным Docker образам из CI/CD пайплайнов
 - API Token сохраняется в Vault в поле `password`
 
-Переменные кластеров задаются в `terraform/services/variables.tf` и `terraform/dev/variables.tf`. Управление: `terraform show`, `terraform output`, `terraform destroy`.
+Переменные кластеров задаются в `service/terraform/variables.tf` и `dev/terraform/variables.tf`. Управление: `terraform show`, `terraform output`, `terraform destroy`.
 
 ## Развертывание Services кластера
 
@@ -270,7 +271,7 @@ helm repo update
 helm upgrade --install cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --create-namespace \
-  -f helm/services/cert-managar/cert-manager-values.yaml
+  -f service/helm/cert-managar/cert-manager-values.yaml
 
 kubectl get pods -n cert-manager
 ```
@@ -281,12 +282,12 @@ kubectl get pods -n cert-manager
 
 ```bash
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-kubectl apply -f manifests/services/cert-manager/cluster-issuer.yaml
+kubectl apply -f service/manifests/cert-manager/cluster-issuer.yaml
 
 kubectl get clusterissuer
 ```
 
-Замените email в `manifests/services/cert-manager/cluster-issuer.yaml`.
+Замените email в `service/manifests/cert-manager/cluster-issuer.yaml`.
 
 ### 5. Создание Gateway
 
@@ -294,18 +295,18 @@ kubectl get clusterissuer
 
 ```bash
 for ns in keycloak argocd jenkins kube-prometheus-stack vault; do kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -; done
-kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
-kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
-kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
-kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
-kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
-kubectl apply -f manifests/services/gateway/gateway.yaml
+kubectl apply -f service/manifests/gateway/routes/keycloak-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/argocd-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/jenkins-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/grafana-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/vault-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/gateway.yaml
 kubectl get certificate -n default -w
 ```
 
 ### 6. Установка CSI драйвера (Timeweb Cloud)
 
-Заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в `helm/services/csi-tw/csi-tw-values.yaml`. Установка через Helm или панель Timeweb Cloud.
+Заполните `TW_API_SECRET` и `TW_CLUSTER_ID` в `service/helm/csi-tw/csi-tw-values.yaml`. Установка через Helm или панель Timeweb Cloud.
 
 ### 7. Установка Vault через Helm
 
@@ -325,7 +326,7 @@ kubectl create namespace vault --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install vault hashicorp/vault \
   --namespace vault \
   --create-namespace \
-  -f helm/services/vault/vault-values.yaml \
+  -f service/helm/vault/vault-values.yaml \
   --wait
 
 # 4. Проверить установку Vault
@@ -380,10 +381,10 @@ cat /tmp/vault-root-token.txt
 
 ```bash
 # Применить HTTPRoute для HTTPS доступа к Vault
-kubectl apply -f manifests/services/gateway/routes/vault-https-route.yaml
+kubectl apply -f service/manifests/gateway/routes/vault-https-route.yaml
 
 # Применить HTTPRoute для редиректа HTTP → HTTPS (если ещё не применён в разделе 5)
-kubectl apply -f manifests/services/gateway/routes/vault-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/vault-http-redirect.yaml
 
 # Проверить HTTPRoute
 kubectl get httproute -n vault
@@ -410,7 +411,7 @@ helm upgrade --install vault-secrets-operator hashicorp/vault-secrets-operator \
   --version 0.10.0 \
   --namespace vault-secrets-operator \
   --create-namespace \
-  -f helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml
+  -f service/helm/vault-secrets-operator/vault-secrets-operator-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n vault-secrets-operator
@@ -509,7 +510,7 @@ vault read auth/kubernetes/role/vault-secrets-operator
 
 #### 8.2. Проверка VaultConnection и VaultAuth
 
-При установке Vault Secrets Operator с values файлом `helm/services/vault-secrets-operator/vault-secrets-operator-values.yaml`, default VaultConnection и VaultAuth создаются автоматически.
+При установке Vault Secrets Operator с values файлом `service/helm/vault-secrets-operator/vault-secrets-operator-values.yaml`, default VaultConnection и VaultAuth создаются автоматически.
 
 ```bash
 # 1. Проверить, что Vault Secrets Operator установлен
@@ -663,7 +664,7 @@ vault kv get -format=json secret/postgresql/admin | jq '.data.data'
 kubectl create namespace postgresql --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret для PostgreSQL admin credentials
-kubectl apply -f manifests/services/postgresql/postgresql-admin-credentials-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/postgresql/postgresql-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n postgresql
@@ -679,7 +680,7 @@ kubectl get secret postgresql-admin-credentials -n postgresql
 
 ```bash
 # Применить StatefulSet, Service (LoadBalancer) и Headless Service
-kubectl apply -f manifests/services/postgresql/postgresql-statefulset.yaml
+kubectl apply -f service/manifests/postgresql/postgresql-statefulset.yaml
 
 # Дождаться готовности
 kubectl wait --for=condition=ready pod -l app=postgresql -n postgresql --timeout=600s
@@ -747,7 +748,7 @@ vault kv put secret/keycloak/admin \
 
 **Шаг 2: Создать VaultStaticSecret для синхронизации секретов**
 
-Манифесты VaultStaticSecret находятся в `manifests/services/keycloak/`:
+Манифесты VaultStaticSecret находятся в `service/manifests/keycloak/`:
 - `keycloak-db-credentials-vaultstaticsecret.yaml` - credentials для подключения к PostgreSQL
 - `keycloak-admin-credentials-vaultstaticsecret.yaml` - admin credentials для Keycloak
 
@@ -756,8 +757,8 @@ vault kv put secret/keycloak/admin \
 kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret манифесты
-kubectl apply -f manifests/services/keycloak/keycloak-db-credentials-vaultstaticsecret.yaml
-kubectl apply -f manifests/services/keycloak/keycloak-admin-credentials-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/keycloak/keycloak-db-credentials-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/keycloak/keycloak-admin-credentials-vaultstaticsecret.yaml
 
 # Дождаться синхронизации секретов
 kubectl wait --for=condition=SecretSynced vaultstaticsecret/keycloak-db-credentials -n keycloak --timeout=60s
@@ -805,7 +806,7 @@ kubectl exec $POSTGRES_POD -n postgresql -- sh -c "PGPASSWORD='$POSTGRES_PASSWOR
 
 **Шаг 5: Обновить конфигурацию Keycloak**
 
-Откройте `manifests/services/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
+Откройте `service/manifests/keycloak/keycloak-instance.yaml` и обновите адрес PostgreSQL:
 
 ```yaml
 database:
@@ -823,7 +824,7 @@ database:
 
 ```bash
 # 1. Создать Keycloak инстанс
-kubectl apply -f manifests/services/keycloak/keycloak-instance.yaml
+kubectl apply -f service/manifests/keycloak/keycloak-instance.yaml
 
 # 2. Проверить статус Keycloak
 kubectl get keycloak -n keycloak
@@ -845,8 +846,8 @@ kubectl wait --for=condition=ready pod -l app=keycloak -n keycloak --timeout=600
 kubectl get certificate -n default | grep keycloak
 
 # 2. Применить HTTPRoute
-kubectl apply -f manifests/services/gateway/routes/keycloak-https-route.yaml
-kubectl apply -f manifests/services/gateway/routes/keycloak-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/keycloak-https-route.yaml
+kubectl apply -f service/manifests/gateway/routes/keycloak-http-redirect.yaml
 
 # 3. Проверить HTTPRoute
 kubectl get httproute -n keycloak
@@ -986,13 +987,13 @@ kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubect
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret для Argo CD OIDC
-kubectl apply -f manifests/services/argocd/argocd-oidc-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/argocd/argocd-oidc-vaultstaticsecret.yaml
 
 # Применить VaultStaticSecret для Grafana OIDC
-kubectl apply -f manifests/services/grafana/grafana-oidc-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/grafana/grafana-oidc-vaultstaticsecret.yaml
 
 # Применить VaultStaticSecret для Jenkins OIDC
-kubectl apply -f manifests/services/jenkins/jenkins-oidc-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/jenkins/jenkins-oidc-vaultstaticsecret.yaml
 ```
 
 **Проверка синхронизации:**
@@ -1055,14 +1056,14 @@ vault kv put secret/argocd/admin password='$ARGO_ADMIN_PASSWORD_HASH'
 
 #### 11.2. Создание VaultStaticSecret для Argo CD
 
-Манифест VaultStaticSecret находится в `manifests/services/argocd/argocd-admin-credentials-vaultstaticsecret.yaml`.
+Манифест VaultStaticSecret находится в `service/manifests/argocd/argocd-admin-credentials-vaultstaticsecret.yaml`.
 
 ```bash
 # Создать namespace для Argo CD
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret манифест
-kubectl apply -f manifests/services/argocd/argocd-admin-credentials-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/argocd/argocd-admin-credentials-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n argocd
@@ -1080,7 +1081,7 @@ helm repo update
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
   --create-namespace \
-  -f helm/services/argocd/argocd-values.yaml \
+  -f service/helm/argocd/argocd-values.yaml \
   --set configs.secret.argocdServerAdminPassword="$(kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d)"
 
 # 3. Проверить установку
@@ -1101,10 +1102,10 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.pas
 
 ```bash
 # 1. Применить HTTPRoute для HTTPS
-kubectl apply -f manifests/services/gateway/routes/argocd-https-route.yaml
+kubectl apply -f service/manifests/gateway/routes/argocd-https-route.yaml
 
 # 2. Применить HTTPRoute для редиректа HTTP → HTTPS
-kubectl apply -f manifests/services/gateway/routes/argocd-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/argocd-http-redirect.yaml
 
 # 3. Проверить HTTPRoute
 kubectl get httproute -n argocd
@@ -1182,13 +1183,13 @@ vault kv get secret/jenkins/docker-registry
 kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret для admin credentials
-kubectl apply -f manifests/services/jenkins/jenkins-admin-credentials-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/jenkins/jenkins-admin-credentials-vaultstaticsecret.yaml
 
 # Применить VaultStaticSecret для GitHub token
-kubectl apply -f manifests/services/jenkins/jenkins-github-token-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/jenkins/jenkins-github-token-vaultstaticsecret.yaml
 
 # Применить VaultStaticSecret для Docker Registry credentials
-kubectl apply -f manifests/services/jenkins/jenkins-docker-registry-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/jenkins/jenkins-docker-registry-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n jenkins
@@ -1209,11 +1210,11 @@ kubectl get secret jenkins-docker-registry -n jenkins -o jsonpath='{.data.passwo
 helm repo add jenkins https://charts.jenkins.io
 helm repo update
 
-# 2. Установить Jenkins (admin credentials уже настроены в helm/services/jenkins/jenkins-values.yaml)
+# 2. Установить Jenkins (admin credentials уже настроены в service/helm/jenkins/jenkins-values.yaml)
 helm upgrade --install jenkins jenkins/jenkins \
   --namespace jenkins \
   --create-namespace \
-  -f helm/services/jenkins/jenkins-values.yaml
+  -f service/helm/jenkins/jenkins-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n jenkins
@@ -1232,10 +1233,10 @@ kubectl get secret jenkins-admin-credentials -n jenkins -o jsonpath='{.data.jenk
 
 ```bash
 # Применить HTTPRoute для HTTPS доступа
-kubectl apply -f manifests/services/gateway/routes/jenkins-https-route.yaml
+kubectl apply -f service/manifests/gateway/routes/jenkins-https-route.yaml
 
 # Применить HTTPRoute для HTTP→HTTPS редиректа
-kubectl apply -f manifests/services/gateway/routes/jenkins-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/jenkins-http-redirect.yaml
 
 # Проверить
 kubectl get httproute -n jenkins
@@ -1245,7 +1246,7 @@ kubectl get httproute -n jenkins
 
 #### 12.5. Проверка GitHub credentials в Jenkins
 
-GitHub credentials настроены в `helm/services/jenkins/jenkins-values.yaml` через JCasC и автоматически загружаются при установке.
+GitHub credentials настроены в `service/helm/jenkins/jenkins-values.yaml` через JCasC и автоматически загружаются при установке.
 
 **Проверка:**
 
@@ -1306,7 +1307,7 @@ kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install loki grafana/loki \
   --namespace logging \
   --create-namespace \
-  -f helm/services/loki/loki-values.yaml
+  -f service/helm/loki/loki-values.yaml
 
 # 4. Проверить установку Loki
 kubectl get pods -n logging -l app.kubernetes.io/name=loki
@@ -1318,7 +1319,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=loki -n logging
 
 **Важно:**
 - Loki использует StorageClass `nvme.network-drives.csi.timeweb.cloud` для персистентного хранилища (50Gi по умолчанию)
-- Конфигурация Loki находится в `helm/services/loki/loki-values.yaml`
+- Конфигурация Loki находится в `service/helm/loki/loki-values.yaml`
 - Loki использует файловую систему для хранения (filesystem storage type)
 - Период хранения логов: 720 часов (30 дней) по умолчанию
 
@@ -1339,7 +1340,7 @@ echo "Loki доступен по адресу: $LOKI_EXTERNAL_IP:3100"
 ```
 
 **Важно:**
-- LoadBalancer Service создается автоматически при установке Loki через Helm chart (настроено в `helm/services/loki/loki-values.yaml`)
+- LoadBalancer Service создается автоматически при установке Loki через Helm chart (настроено в `service/helm/loki/loki-values.yaml`)
 - Имя сервиса: `loki-gateway` (если release name = `loki`)
 - Запишите внешний IP адрес Loki - он понадобится для настройки Fluent Bit в dev кластере
 - Убедитесь, что firewall разрешает подключения к порту 3100 с IP адресов dev кластера
@@ -1374,7 +1375,7 @@ Fluent Bit разворачивается как DaemonSet и собирает �
 **Важно:**
 - Loki должен быть развернут перед установкой Fluent Bit
 - Fluent Bit настроен для отправки логов в Loki через внутренний сервис `loki-gateway.logging.svc.cluster.local:3100` (не требуется внешний IP, так как оба компонента в одном кластере)
-- Конфигурация находится в `helm/services/fluent-bit/fluent-bit-values.yaml`
+- Конфигурация находится в `service/helm/fluent-bit/fluent-bit-values.yaml`
 
 #### 14.1. Установка Fluent Bit через Helm
 
@@ -1393,7 +1394,7 @@ kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install fluent-bit fluent/fluent-bit \
   --namespace logging \
   --create-namespace \
-  -f helm/services/fluent-bit/fluent-bit-values.yaml
+  -f service/helm/fluent-bit/fluent-bit-values.yaml
 
 # 4. Проверить установку
 kubectl get pods -n logging -l app.kubernetes.io/name=fluent-bit
@@ -1481,7 +1482,7 @@ vault kv get secret/grafana/admin
 kubectl create namespace kube-prometheus-stack --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret для admin credentials
-kubectl apply -f manifests/services/grafana/grafana-admin-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/grafana/grafana-admin-vaultstaticsecret.yaml
 
 # Проверить синхронизацию секретов
 kubectl get vaultstaticsecret -n kube-prometheus-stack
@@ -1534,7 +1535,7 @@ vault kv get secret/grafana/oidc
 
 ```bash
 # Применить VaultStaticSecret для OIDC credentials
-kubectl apply -f manifests/services/grafana/grafana-oidc-vaultstaticsecret.yaml
+kubectl apply -f service/manifests/grafana/grafana-oidc-vaultstaticsecret.yaml
 
 # Проверить статус VaultStaticSecret
 kubectl get vaultstaticsecret -n kube-prometheus-stack
@@ -1557,11 +1558,11 @@ helm repo add prometheus-community https://prometheus-community.github.io/helm-c
 helm repo update
 
 # 2. Установить Prometheus Kube Stack
-# Admin credentials уже настроены в helm/services/prom-kube-stack/prom-kube-stack-values.yaml
+# Admin credentials уже настроены в service/helm/prom-kube-stack/prom-kube-stack-values.yaml
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --namespace kube-prometheus-stack \
   --create-namespace \
-  -f helm/services/prom-kube-stack/prom-kube-stack-values.yaml
+  -f service/helm/prom-kube-stack/prom-kube-stack-values.yaml
 
 # 3. Проверить установку
 kubectl get pods -n kube-prometheus-stack
@@ -1603,10 +1604,10 @@ kubectl get secret grafana-admin -n kube-prometheus-stack -o jsonpath='{.data.ad
 
 ```bash
 # Применить HTTPRoute для HTTPS доступа
-kubectl apply -f manifests/services/gateway/routes/grafana-https-route.yaml
+kubectl apply -f service/manifests/gateway/routes/grafana-https-route.yaml
 
 # Применить HTTPRoute для HTTP→HTTPS редиректа
-kubectl apply -f manifests/services/gateway/routes/grafana-http-redirect.yaml
+kubectl apply -f service/manifests/gateway/routes/grafana-http-redirect.yaml
 
 # Проверить
 kubectl get httproute -n kube-prometheus-stack
@@ -1630,27 +1631,27 @@ kubectl get httproute -n kube-prometheus-stack
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # 1. Применить AppProject (должны быть созданы до Application)
-kubectl apply -f manifests/services/argocd/appprojects/
+kubectl apply -f service/manifests/argocd/appprojects/
 
 # 2. Применить Application для инфраструктурных сервисов
-kubectl apply -f manifests/services/argocd/applications/dev/
+kubectl apply -f service/manifests/argocd/applications/dev/
 ```
 
 **AppProject:**
-- `manifests/services/argocd/appprojects/dev-infrastructure-project.yaml` — для инфраструктурных сервисов
-- `manifests/services/argocd/appprojects/dev-microservices-project.yaml` — для микросервисов
+- `service/manifests/argocd/appprojects/dev-infrastructure-project.yaml` — для инфраструктурных сервисов
+- `service/manifests/argocd/appprojects/dev-microservices-project.yaml` — для микросервисов
 
 **Application для инфраструктурных сервисов:**
-- `manifests/services/argocd/applications/dev/application-cert-manager.yaml`
-- `manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml`
-- `manifests/services/argocd/applications/dev/application-fluent-bit.yaml`
+- `service/manifests/argocd/applications/dev/application-cert-manager.yaml`
+- `service/manifests/argocd/applications/dev/application-vault-secrets-operator.yaml`
+- `service/manifests/argocd/applications/dev/application-fluent-bit.yaml`
 
 
 ### Шаг 1: Развертывание кластера через Terraform
 
 ```bash
 # 1. Перейти в директорию dev
-cd terraform/dev
+cd dev/terraform
 
 # 2. Инициализировать Terraform (загрузит провайдеры и настроит backend)
 terraform init
@@ -1688,10 +1689,10 @@ CSI драйвер необходим для работы с Persistent Volumes 
 # 1. Получить Cluster ID dev кластера
 # Cluster ID можно найти в панели управления Timeweb Cloud
 # Или получить из Terraform state:
-cd terraform/dev
+cd dev/terraform
 terraform show | grep -i "id.*=" | head -1
 
-# 2. Отредактировать helm/dev/csi-tw/csi-tw-values.yaml:
+# 2. Отредактировать dev/helm/csi-tw/csi-tw-values.yaml:
 #    - Указать TW_API_SECRET (API токен Timeweb Cloud)
 #    - Указать TW_CLUSTER_ID (ID dev кластера, будет отличаться от services кластера)
 
@@ -1703,7 +1704,7 @@ helm repo add timeweb-cloud https://charts.timeweb.cloud  # Проверьте �
 helm repo update
 helm upgrade --install csi-driver-timeweb-cloud timeweb-cloud/csi-driver \
   --namespace kube-system \
-  -f helm/dev/csi-tw/csi-tw-values.yaml
+  -f dev/helm/csi-tw/csi-tw-values.yaml
 
 # 4. Проверить установку
 kubectl get pods -n kube-system | grep csi-driver
@@ -1762,7 +1763,7 @@ echo "Token: ${DEV_TOKEN:0:20}..."
 
 **Пункт 2: Заполнить manifest файл**
 
-Отредактируйте файл `manifests/services/argocd/dev-cluster-secret.yaml`:
+Отредактируйте файл `service/manifests/argocd/dev-cluster-secret.yaml`:
 - Замените `<DEV_CLUSTER_SERVER>` на адрес API сервера
 - Замените `<DEV_BEARER_TOKEN>` на токен
 - Замените `<DEV_CA_DATA_BASE64>` на CA сертификат (base64)
@@ -1774,7 +1775,7 @@ echo "Token: ${DEV_TOKEN:0:20}..."
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # Применить Secret
-kubectl apply -f manifests/services/argocd/dev-cluster-secret.yaml
+kubectl apply -f service/manifests/argocd/dev-cluster-secret.yaml
 
 # Проверить, что Secret создан
 kubectl get secret dev-cluster-secret -n argocd
@@ -1806,10 +1807,10 @@ AppProject организует Application и определяет права �
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # Применить AppProject для инфраструктурных сервисов dev кластера
-kubectl apply -f manifests/services/argocd/appprojects/dev-infrastructure-project.yaml
+kubectl apply -f service/manifests/argocd/appprojects/dev-infrastructure-project.yaml
 
 # Применить AppProject для микросервисов dev кластера
-kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
+kubectl apply -f service/manifests/argocd/appprojects/dev-microservices-project.yaml
 
 # Проверить, что AppProject созданы
 kubectl get appproject -n argocd
@@ -1832,7 +1833,7 @@ cert-manager необходим для автоматического управ
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # Применить Application для cert-manager
-kubectl apply -f manifests/services/argocd/applications/dev/application-cert-manager.yaml
+kubectl apply -f service/manifests/argocd/applications/dev/application-cert-manager.yaml
 
 # Проверить статус Application в Argo CD
 kubectl get application cert-manager-dev -n argocd
@@ -1859,7 +1860,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manage
 ```
 
 **Важно:** 
-- Флаг `config.enableGatewayAPI: true` (в `helm/dev/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
+- Флаг `config.enableGatewayAPI: true` (в `dev/helm/cert-manager/cert-manager-values.yaml`) **обязателен** для работы с Gateway API!
 
 ### 6. ClusterIssuer
 
@@ -1868,14 +1869,14 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manage
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
 # 1. Применить ClusterIssuer (отредактируйте email перед применением!)
-kubectl apply -f manifests/dev/cert-manager/cluster-issuer.yaml
+kubectl apply -f dev/manifests/cert-manager/cluster-issuer.yaml
 
 # 2. Проверить ClusterIssuer
 kubectl get clusterissuer
 kubectl describe clusterissuer letsencrypt-prod
 ```
 
-**Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `manifests/dev/cert-manager/cluster-issuer.yaml`
+**Важно:** Замените `admin@buildbyte.ru` на ваш реальный email в `dev/manifests/cert-manager/cluster-issuer.yaml`
 
 ### 7. Gateway
 
@@ -1886,7 +1887,7 @@ kubectl describe clusterissuer letsencrypt-prod
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
 # 1. Применить Gateway
-kubectl apply -f manifests/dev/gateway/gateway.yaml
+kubectl apply -f dev/manifests/gateway/gateway.yaml
 
 # 2. Проверить статус Gateway
 kubectl get gateway -n default
@@ -1923,10 +1924,10 @@ kubectl get certificate -n default -w
 kubectl create namespace donweather --dry-run=client -o yaml | kubectl apply -f -
 
 # HTTP → HTTPS редирект
-kubectl apply -f manifests/dev/gateway/routes/donweather-http-redirect.yaml
+kubectl apply -f dev/manifests/gateway/routes/donweather-http-redirect.yaml
 
 # HTTPS маршрут (api.donweather.dev.buildbyte.ru → микросервисы по path)
-kubectl apply -f manifests/dev/gateway/routes/donweather-api-https-route.yaml
+kubectl apply -f dev/manifests/gateway/routes/donweather-api-https-route.yaml
 
 # Проверить
 kubectl get httproute -n donweather
@@ -1965,12 +1966,12 @@ kubectl get httproute vault-server -n vault -o yaml
 - **Gateway:** `service-gateway` (HTTPS listener)
 - **Backend:** сервис `vault:8200` в namespace `vault`
 
-**Файл манифеста:** `manifests/services/gateway/routes/vault-https-route.yaml`
+**Файл манифеста:** `service/manifests/gateway/routes/vault-https-route.yaml`
 
 **Важно:** 
 - Убедитесь, что DNS запись для `vault.buildbyte.ru` указывает на IP адрес Gateway в services кластере
 - Убедитесь, что TLS сертификат для `vault.buildbyte.ru` создан и валиден
-- HTTPRoute должен быть применен в services кластере: `kubectl apply -f manifests/services/gateway/routes/vault-https-route.yaml`
+- HTTPRoute должен быть применен в services кластере: `kubectl apply -f service/manifests/gateway/routes/vault-https-route.yaml`
 
 **Адрес Vault для подключения из dev кластера:**
 - **HTTPS:** `https://vault.buildbyte.ru:443` (рекомендуется)
@@ -2146,7 +2147,7 @@ Vault Secrets Operator разворачивается через Argo CD Applica
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # Применить Application для Vault Secrets Operator
-kubectl apply -f manifests/services/argocd/applications/dev/application-vault-secrets-operator.yaml
+kubectl apply -f service/manifests/argocd/applications/dev/application-vault-secrets-operator.yaml
 
 # Проверить статус Application в Argo CD
 kubectl get application vault-secrets-operator-dev -n argocd
@@ -2181,10 +2182,10 @@ VaultConnection и VaultAuth с именем `default` уже созданы п�
 export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 
 # Применить VaultConnection
-kubectl apply -f manifests/dev/vault-secrets-operator/vault-connection.yaml
+kubectl apply -f dev/manifests/vault-secrets-operator/vault-connection.yaml
 
 # Применить VaultAuth
-kubectl apply -f manifests/dev/vault-secrets-operator/vault-auth.yaml
+kubectl apply -f dev/manifests/vault-secrets-operator/vault-auth.yaml
 
 # Проверить VaultConnection и VaultAuth
 kubectl get vaultconnection -n vault-secrets-operator
@@ -2218,15 +2219,15 @@ LOKI_EXTERNAL_IP=$(kubectl get svc loki-gateway -n logging -o jsonpath='{.status
 echo "Внешний IP адрес Loki: $LOKI_EXTERNAL_IP"
 
 # 2. Проверить текущий IP адрес в конфигурации Fluent Bit
-grep "Host" helm/dev/fluent-bit/fluent-bit-values.yaml | grep -v "#"
+grep "Host" dev/helm/fluent-bit/fluent-bit-values.yaml | grep -v "#"
 
 # 3. Если IP адрес отличается, обновить вручную в файле:
-# helm/dev/fluent-bit/fluent-bit-values.yaml
+# dev/helm/fluent-bit/fluent-bit-values.yaml
 # Найти секцию [OUTPUT] и заменить Host на актуальный IP адрес Loki
 ```
 
 **Важно:**
-- IP адрес Loki указывается в секции `config.outputs` файла `helm/dev/fluent-bit/fluent-bit-values.yaml`
+- IP адрес Loki указывается в секции `config.outputs` файла `dev/helm/fluent-bit/fluent-bit-values.yaml`
 - IP адрес можно получить командой: `kubectl get svc loki-gateway -n logging -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
 - Если LoadBalancer еще не получил IP адрес, дождитесь его назначения перед настройкой Fluent Bit
 
@@ -2239,7 +2240,7 @@ Fluent Bit разворачивается через Argo CD Application в serv
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # 1. Применить Argo CD Application для Fluent Bit
-kubectl apply -f manifests/services/argocd/applications/dev/application-fluent-bit.yaml
+kubectl apply -f service/manifests/argocd/applications/dev/application-fluent-bit.yaml
 
 # 2. Проверить статус Application в Argo CD
 kubectl get application fluent-bit-dev -n argocd
@@ -2339,7 +2340,7 @@ echo '...'
 
 #### 10.1.2. Создание VaultStaticSecret в dev кластере
 
-Манифест: `manifests/dev/docker-registry/registry-docker-registry-vaultstaticsecret.yaml`. Он создаёт в namespace `donweather` Secret типа `kubernetes.io/dockerconfigjson` с именем `registry-docker-registry`.
+Манифест: `dev/manifests/docker-registry/registry-docker-registry-vaultstaticsecret.yaml`. Он создаёт в namespace `donweather` Secret типа `kubernetes.io/dockerconfigjson` с именем `registry-docker-registry`.
 
 ```bash
 # Переключиться на dev кластер
@@ -2349,7 +2350,7 @@ export KUBECONFIG=$HOME/kubeconfig-dev-cluster.yaml
 kubectl create namespace donweather --dry-run=client -o yaml | kubectl apply -f -
 
 # Применить VaultStaticSecret
-kubectl apply -f manifests/dev/docker-registry/registry-docker-registry-vaultstaticsecret.yaml
+kubectl apply -f dev/manifests/docker-registry/registry-docker-registry-vaultstaticsecret.yaml
 
 # Дождаться синхронизации
 kubectl wait --for=condition=SecretSynced vaultstaticsecret/registry-docker-registry -n donweather --timeout=120s
@@ -2390,7 +2391,7 @@ AppProject `dev-microservices` используется для разверты�
 export KUBECONFIG=$HOME/kubeconfig-services-cluster.yaml
 
 # Применить AppProject для микросервисов
-kubectl apply -f manifests/services/argocd/appprojects/dev-microservices-project.yaml
+kubectl apply -f service/manifests/argocd/appprojects/dev-microservices-project.yaml
 
 # Проверить создание проекта
 kubectl get appproject dev-microservices -n argocd

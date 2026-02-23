@@ -1,0 +1,22 @@
+---
+# VaultConnection для подключения к внешнему Vault (services кластер)
+#
+# Vault находится в services кластере и доступен через HTTPRoute
+# по адресу https://vault.buildbyte.ru
+#
+# Использование:
+#   kubectl apply -f dev/manifests/vault-secrets-operator/vault-connection.yaml
+#
+# Проверка:
+#   kubectl get vaultconnection -n vault-secrets-operator
+#   kubectl describe vaultconnection default -n vault-secrets-operator
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: default
+  namespace: vault-secrets-operator
+spec:
+  # Адрес Vault в services кластере (через HTTPRoute)
+  address: https://vault.buildbyte.ru
+  # TLS проверка включена (сертификат от Let's Encrypt)
+  skipTLSVerify: false
