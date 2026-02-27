@@ -1,0 +1,289 @@
+
+services:
+  ollama:
+    image: ollama/ollama:0.1.48
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      # Можно ограничить параллелизм/нагрузку
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+  ms-tips:
+    build: ../../../../development/DonWeather/DonWeather-ms-tips
+    container_name: ms-tips
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+      ms-watcher:
+        condition: service_started
+    networks:
+      - weather_network
+    environment:
+      - PREDICT_API_URL=http://ms-lightgbm:8000/api/v1/predict
+      - OLLAMA_API_URL=http://ms-ollama:8080/api/v1/tips/get-tips
+    ports:
+      - "8086:8080"
+  ms-lightgbm:
+    build: ../../../../development/DonWeather/DonWeather-ms-lightgbm
+    container_name: ms-lightgbm
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+      ms-watcher:
+        condition: service_started
+    networks:
+      - weather_network
+    environment:
+      - MODEL_PATH_TEMP_DELTA=/data/models/model_temp_delta.txt
+      - MODEL_PATH_RAIN_PROBABILITY=/data/models/model_rain_probability.txt
+      - MODEL_PATH_WIND_PROBABILITY=/data/models/model_wind_probability.txt
+    volumes:
+      - ./data/models:/data/models
+    ports:
+      - "8085:8000"
+  ms-ollama:
+    build: ../../../../development/DonWeather/DonWeather-ms-ollama
+    container_name: ms-ollama
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+      ms-watcher:
+        condition: service_started
+    networks:
+      - weather_network
+    environment:
+      - OLLAMA_API_URL=http://ollama:11434/api
+      - OLLAMA_MODEL=llama3.2:8b
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: my_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: weather
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d
+      - pgdata:/var/lib/postgresql/data
+      - ./data:/data
+    networks:
+      - weather_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d weather"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+  nats:
+    image: nats:2.10-alpine
+    container_name: weather_nats
+    restart: unless-stopped
+    command: >
+      -js
+      -sd /data
+      -m 8222
+    volumes:
+      - natsdata:/data
+    networks:
+      - weather_network
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  ms-watcher:
+    build: ../../../../development/DonWeather/DonWeather-ms-watcher
+    container_name: ms-watcher
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+    networks:
+      - weather_network
+    environment:
+      - WEATHER_API_URL=http://ms-weather:8080/api/v1/weather
+      - NATS_HOST=nats
+      - REDIS_HOST=weather_redis
+      - REDIS_PORT=6379
+      - DB_PASSWORD=subscribe_password
+      - DB_USER=subscribe_user
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=subscribe
+    ports:
+      - "8084:8080"
+  ms-notification:
+    build: ../../../../development/DonWeather/DonWeather-ms-notification
+    container_name: ms-notification
+    restart: unless-stopped
+    depends_on:
+      nats:
+        condition: service_healthy
+      ms-watcher:
+        condition: service_started
+    networks:
+      - weather_network
+    environment:
+      - NATS_HOST=nats
+  redis:
+    image: redis:7-alpine
+    container_name: weather_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    networks:
+      - weather_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+  ms-subscribe:
+    build: ../../../../development/DonWeather/DonWeather-ms-subscribe
+    container_name: ms-subscribe
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - weather_network
+    environment:
+      - CORS_ORIGIN=*
+      - REDIS_HOST=weather_redis
+      - REDIS_PORT=6379
+      - REDIS_TTL=10
+      - DB_PASSWORD=subscribe_password
+      - DB_USER=subscribe_user
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=subscribe
+    expose:
+      - "8080"
+  ms-weather:
+    build: ../../../../development/DonWeather/DonWeather-ms-weather
+    container_name: ms-weather
+    restart: unless-stopped
+    # Порт не пробрасываем наружу, доступен только через nginx
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      - CORS_ORIGIN=*
+      - WEATHER_API_KEY=cd3200bf0f914528862150404260801
+      - DB_PASSWORD=mypassword
+      - DB_USER=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=weather
+    networks:
+      - weather_network
+  ms-georesolve:
+    build: ../../../../development/DonWeather/DonWeather-ms-georesolve
+    container_name: ms-georesolve
+    restart: unless-stopped
+    # Порт не пробрасываем наружу, доступен только через nginx
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ms-weather:
+        condition: service_started
+    environment:
+      - DB_PASSWORD=georesolv_password
+      - DB_USER=georesolv_user
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=georesolve
+    networks:
+      - weather_network
+  ms-telegram:
+    build: ../../../../development/DonWeather/DonWeather-ms-telegram
+    container_name: ms-telegram
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ms-notification:
+        condition: service_started
+    networks:
+      - weather_network
+    environment:
+      - WEBHOOK_URL=https://grey-victorious-nonunderstandingly.ngrok-free.dev/api/v1/telegram/webhook
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - CORS_ORIGIN=*
+      - API_URL=http://ms-subscribe:8080/api/v1/subscribe/create
+      - NATS_HOST=nats
+      - TELEGRAM_BOT_API_BASE_URL=https://api.telegram.org
+    expose:
+      - "8080"
+  nginx:
+    image: nginx:alpine
+    container_name: weather_nginx
+    restart: unless-stopped
+    ports:
+      - "8082:80"  # API gateway для фронтенда
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ms-weather
+      - ms-georesolve
+    networks:
+      - weather_network
+  frontend:
+    build: ../../../../development/DonWeather/DonWeather-front
+    container_name: weather_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"  # только фронтенд наружу
+    depends_on:
+      - nginx
+    networks:
+      - weather_network
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    restart: unless-stopped
+    networks:
+      - weather_network
+    environment:
+      - NGROK_AUTHTOKEN=39cLEaM6SL4C2FWlVbVCgNj8dpM_46fadh2uiM2kWHcR1cUWd
+    command: http telegram_app:8080 --log=stdout
+networks:
+  weather_network:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  natsdata:
+  ollama_data:
