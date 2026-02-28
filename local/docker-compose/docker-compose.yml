@@ -1,22 +1,5 @@
 
 services:
-  ollama:
-    image: ollama/ollama:0.1.48
-    container_name: ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      # Можно ограничить параллелизм/нагрузку
-      - OLLAMA_NUM_PARALLEL=1
-      - OLLAMA_MAX_LOADED_MODELS=1
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 8G
   ms-tips:
     build: ../../../../development/DonWeather/DonWeather-ms-tips
     container_name: ms-tips
@@ -30,7 +13,7 @@ services:
       - weather_network
     environment:
       - PREDICT_API_URL=http://ms-lightgbm:8000/api/v1/predict
-      - OLLAMA_API_URL=http://ms-ollama:8080/api/v1/tips/get-tips
+      - LLM_API_URL=http://ms-llm:8080/api/v1/tips/get-tips
     ports:
       - "8086:8080"
   ms-lightgbm:
@@ -53,7 +36,7 @@ services:
     ports:
       - "8085:8000"
   ms-llm:
-    build: ../../../../development/DonWeather/DonWeather-ms-ollama
+    build: ../../../../development/DonWeather/DonWeather-ms-llm
     container_name: ms-llm
     restart: unless-stopped
     depends_on:
@@ -288,4 +271,3 @@ volumes:
   pgdata:
   redisdata:
   natsdata:
-  ollama_data:
