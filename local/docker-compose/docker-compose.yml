@@ -52,9 +52,9 @@ services:
       - ./data/models:/data/models
     ports:
       - "8085:8000"
-  ms-ollama:
+  ms-llm:
     build: ../../../../development/DonWeather/DonWeather-ms-ollama
-    container_name: ms-ollama
+    container_name: ms-llm
     restart: unless-stopped
     depends_on:
       nats:
@@ -64,19 +64,21 @@ services:
     networks:
       - weather_network
     environment:
-      - OLLAMA_API_URL=http://ollama:11434/api
-      - OLLAMA_MODEL=llama3.2:8b
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YANDEX_API_AGENT_URL=https://rest-assistant.api.cloud.yandex.net/v1/responses
+      - YANDEX_PROMPT_ID=fvt65721dad78sop0dhj
+      - YANDEX_PROJECT_ID=b1ge2k67jupc2l350ufk
   postgres:
     image: postgis/postgis:16-3.4
     container_name: my_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: mypassword
-      POSTGRES_DB: weather
-      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
-      LC_ALL: C.UTF-8
-      LANG: C.UTF-8
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mypassword
+      - POSTGRES_DB=weather
+      - POSTGRES_INITDB_ARGS="--locale=C.UTF-8 --encoding=UTF8"
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
     volumes:
       - ./db/init:/docker-entrypoint-initdb.d
       - pgdata:/var/lib/postgresql/data
@@ -198,7 +200,7 @@ services:
         condition: service_healthy
     environment:
       - CORS_ORIGIN=*
-      - WEATHER_API_KEY=cd3200bf0f914528862150404260801
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
       - DB_PASSWORD=mypassword
       - DB_USER=postgres
       - DB_HOST=postgres
